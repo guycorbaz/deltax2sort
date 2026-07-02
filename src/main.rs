@@ -14,8 +14,8 @@ use anyhow::Context;
 use app_config::AppConfig;
 use clap::Parser;
 use hardware::{
-    CameraDriver, ConveyorController, EmergencyStop, MockCamera, MockConveyor, MockRobot,
-    OpencvCamera, RobotController,
+    CameraDriver, ConveyorController, MockCamera, MockConveyor, MockRobot, OpencvCamera,
+    RobotController,
 };
 use log::{error, info, warn};
 use orchestrator::{Orchestrator, OrchestratorMsg, RobotCommand};
