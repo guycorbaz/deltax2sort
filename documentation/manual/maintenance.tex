@@ -1,0 +1,58 @@
+\chapter{Maintenance and Development}
+
+\section{Project layout}
+\index{project layout}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Path} & \textbf{Contents} \\
+    \midrule
+    \cfg{src/main.rs} & Entry point, UI callbacks, task wiring. \\
+    \cfg{src/hardware.rs} & Robot, conveyor and camera drivers plus mocks;
+      workspace limits; emergency-stop handles. \\
+    \cfg{src/orchestrator.rs} & Message loop, instruction queue, trajectory
+      planner. \\
+    \cfg{src/vision/} & Detector, calibration, tracker, classifier. \\
+    \cfg{src/app\_config.rs} & Configuration structures, loading,
+      validation. \\
+    \cfg{ui/app\_window.slint} & Operator interface definition. \\
+    \cfg{documentation/} & Specifications, this manual (sources under
+      \cfg{documentation/manual/}), TODO list. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Repository layout}
+\end{table}
+
+\section{Tests}
+\index{tests}\index{cargo test@\texttt{cargo test}}%
+Run the unit test suite with \cfg{cargo test}. Covered today:
+configuration parsing and validation (including backward compatibility
+with older configuration files), the pixel-to-world calibration transform,
+the trajectory-planner intercept mathematics, workspace-limit enforcement
+in both robot drivers, and the instruction queue.
+
+\section{Development workflow}
+\index{development workflow}\index{mock mode}%
+Develop against mock hardware (\cfg{--mock}) whenever possible. The mocks
+implement the same traits as the real drivers, including workspace-limit
+enforcement, so orchestration logic can be validated safely. The robot's
+serial protocol is documented in Appendix~\ref{app:gcode}.
+
+\section{Editing this manual}
+\index{manual!editing}\index{latexmk@\texttt{latexmk}}%
+The manual sources live under \cfg{documentation/manual/}, one file per
+chapter; \cfg{documentation/manual.tex} is the driver that sets the class
+and includes them. Build with:
+\begin{lstlisting}[language=bash]
+cd documentation && latexmk -pdf manual.tex
+\end{lstlisting}
+
+\section{Remaining work}
+\index{TODO list}\index{roadmap}%
+The authoritative, maintained list of open work items lives in
+\cfg{documentation/TODO.md}. Major open areas at the time of writing:
+wiring the vision loop end-to-end (camera $\rightarrow$ detection
+$\rightarrow$ pick scheduling), the live camera feed and overlays in the
+UI, a real object tracker and classifier, belt-motion compensation using
+robot position feedback, and a camera calibration wizard.

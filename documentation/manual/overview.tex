@@ -1,0 +1,123 @@
+\chapter{System Overview}
+
+\section{Purpose}
+\index{Delta X2 robot}\index{sorting}%
+The Delta X2 LEGO Sorting System is a Rust application that drives a
+Delta~X2 delta robot to pick LEGO bricks from a moving conveyor belt and
+sort them into bins. A USB camera watches the belt upstream of the robot;
+a vision pipeline detects bricks, converts their pixel positions into
+robot coordinates, and an orchestrator schedules pick-and-place moves that
+are executed as G-code over a serial connection.
+
+\section{Hardware components}
+\index{hardware!components}\index{conveyor}\index{camera}\index{gripper}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Component} & \textbf{Interface and protocol} \\
+    \midrule
+    Delta X2 robot (SP-X2) & USB serial (\cfg{/dev/ttyUSB0}), G-code at 115\,200 baud.
+      Workspace: X/Y $\in [-160, 160]$\,mm, Z $\in [-200, 0]$\,mm (Z$=0$ at the top).
+      Full protocol: Appendix~\ref{app:gcode}. \\
+    Conveyor belt & Separate USB serial (\cfg{/dev/ttyUSB1}); \cfg{M3 S<speed>} to
+      start, \cfg{M5} to stop. \\
+    USB camera & UVC device via OpenCV; default 1280$\times$720. Fixed, even
+      lighting over the belt is required for reliable detection. \\
+    Gripper / suction & Driven through the robot controller: \cfg{M03} on,
+      \cfg{M05} off. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Hardware interfaces}
+\end{table}
+
+\section{Software architecture}
+\index{architecture}\index{tokio}\index{Slint}%
+The application is asynchronous (tokio) with a Slint GUI. It is organised
+in three layers plus the UI:
+
+\begin{figure}[h]
+  \centering
+  \begin{tikzpicture}[
+      layer/.style={draw=primary,fill=primary!8,rounded corners=3pt,
+        minimum width=3.4cm,minimum height=1.0cm,font=\sffamily\small,align=center},
+      hw/.style={draw=slate,fill=slate!10,rounded corners=3pt,
+        minimum width=3.4cm,minimum height=1.0cm,font=\sffamily\small,align=center},
+      flow/.style={-{Stealth[length=2.5mm]},thick,primary},
+      lbl/.style={font=\sffamily\scriptsize,text=slate}]
+    \node[layer] (ui) {Slint UI\\\scriptsize ui/app\_window.slint};
+    \node[layer,below=0.7cm of ui] (main) {main.rs\\\scriptsize callbacks, wiring};
+    \node[layer,below left=0.9cm and 1.4cm of main] (vision)
+      {Vision layer\\\scriptsize src/vision/};
+    \node[layer,below=0.9cm of main] (orch)
+      {Orchestrator\\\scriptsize src/orchestrator.rs};
+    \node[layer,below right=0.9cm and 1.4cm of main] (hwl)
+      {Hardware layer\\\scriptsize src/hardware.rs};
+    \node[hw,below=0.8cm of vision] (cam) {Camera};
+    \node[hw,below=0.8cm of orch] (robot) {Robot};
+    \node[hw,below=0.8cm of hwl] (belt) {Conveyor};
+    \draw[flow] (ui) -- (main);
+    \draw[flow] (main) -- (vision);
+    \draw[flow] (main) -- (orch);
+    \draw[flow] (main) -- (hwl);
+    \draw[flow] (vision.east) -- node[lbl,above] {Pick msgs} (orch.west);
+    \draw[flow] (cam) -- (vision);
+    \draw[flow] (orch) -- (robot);
+    \draw[flow] (hwl) -- (belt);
+  \end{tikzpicture}
+  \caption{Layered architecture. Hardware access always goes through the
+    trait abstractions of the hardware layer, so every component can also
+    run against mock implementations (\cfg{--mock}).}
+\end{figure}
+
+\begin{description}[style=nextline]
+  \item[Hardware layer (\cfg{src/hardware.rs})]
+    \index{hardware!layer}\index{mock mode}%
+    Async traits \cfg{RobotController}, \cfg{ConveyorController} and
+    \cfg{CameraDriver}, each with a real and a mock implementation.
+    The real robot driver validates every target position against the
+    configured workspace before any G-code is sent, and synchronises on
+    the robot's \cfg{FEEDBACK} echo so a command completes only when the
+    physical move has finished.
+  \item[Vision layer (\cfg{src/vision/})]
+    \index{vision}\index{detection}\index{tracker}\index{classifier}%
+    Blob detection (grayscale, blur, threshold, contours), pixel-to-world
+    calibration (affine transform with rotation), an object tracker and a
+    classifier. Tracker and classifier are still placeholder
+    implementations (see the project TODO list).
+  \item[Orchestrator (\cfg{src/orchestrator.rs})]
+    \index{orchestrator}\index{instruction queue}%
+    Receives messages (pick requests, raw commands, pause/resume,
+    emergency stop) over a channel, maintains the instruction queue and
+    executes commands one at a time on the robot.
+  \item[UI (\cfg{ui/app\_window.slint})]
+    Operator dashboard with start/pause, conveyor stop, homing and a
+    prominent emergency-stop button.
+\end{description}
+
+\section{Safety design}
+\label{sec:safety}
+\index{safety}\index{emergency stop}\index{workspace!limits}\index{validation!configuration}%
+Three mechanisms protect the machine and its surroundings:
+\begin{enumerate}
+  \item \textbf{Configuration validation at startup.} \cfg{Settings.toml}
+    is checked before any hardware is touched; a pick height outside the
+    robot's physical Z range, or a drop bin outside the workspace, aborts
+    startup with a clear error.
+  \item \textbf{Workspace enforcement per move.} Every \cfg{move\_to}
+    target is validated against the configured limits inside the robot
+    driver itself. An out-of-bounds target is rejected; it can never reach
+    the hardware.
+  \item \textbf{Preemptive emergency stop.} The E-stop button writes the
+    halt commands (\cfg{M112} to the robot, \cfg{M5} to the conveyor) on
+    \emph{dedicated serial handles} that bypass the normal command queue
+    and locks, so the halt is delivered even while a move is in flight.
+    The orchestrator queue is cleared and paused at the same time.
+\end{enumerate}
+
+\begin{warningbox}
+  The software E-stop depends on a working USB serial link and on the
+  robot firmware processing \cfg{M112}. It is \emph{not} a substitute for
+  a hardware emergency stop on the robot's power circuit. Always keep the
+  physical E-stop within reach during operation.
+\end{warningbox}

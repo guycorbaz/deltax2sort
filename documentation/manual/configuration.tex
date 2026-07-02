@@ -1,0 +1,167 @@
+\chapter{Configuration}
+
+\section{The configuration file}
+\index{configuration}\index{Settings.toml@\texttt{Settings.toml}}\index{validation!configuration}%
+All settings live in a single TOML file, \cfg{Settings.toml} in the
+working directory by default; an alternative path can be given with
+\cfg{--config <path>}. If the file does not exist, a default one is
+created on first start.
+
+\begin{notebox}
+  The configuration is \textbf{validated at startup}. Inconsistent values
+  --- for example a \cfg{z\_pick} below the robot's physical range, or a
+  drop position outside the workspace --- abort startup with a message
+  naming the offending key. The application never starts with a
+  configuration that could command the robot outside its workspace.
+\end{notebox}
+
+\section{Section \texttt{[robot]}}
+\index{configuration!robot@\texttt{[robot]}}\index{workspace!limits}\index{feed rate}\index{pick height}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    port\_name & /dev/ttyUSB0 & Serial device of the robot controller. \\
+    baud\_rate & 115200 & Serial speed (Delta X2 standard). \\
+    home\_on\_connect & true & Home (\cfg{G28}) automatically after connecting. \\
+    x\_min, x\_max & $-160$, $160$ & Allowed X range in mm. \\
+    y\_min, y\_max & $-160$, $160$ & Allowed Y range in mm. \\
+    z\_min, z\_max & $-200$, $0$ & Allowed Z range in mm (Z$=0$ is the top). \\
+    z\_pick & $-180$ & Z height at which bricks are picked (belt surface). \\
+    z\_travel & $-50$ & Safe Z height for horizontal travel. \\
+    feed\_rate & 15000 & G-code feed rate in mm/min (\cfg{F} parameter). \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[robot]} keys}
+\end{table}
+
+Constraints enforced by validation: each axis minimum must be below its
+maximum; \cfg{z\_pick} and \cfg{z\_travel} must lie within
+$[\cfg{z\_min}, \cfg{z\_max}]$; \cfg{z\_travel} must be above
+\cfg{z\_pick}.
+
+\begin{warningbox}
+  Reducing \cfg{x\_min}/\cfg{x\_max}/\cfg{y\_min}/\cfg{y\_max} below the
+  physical maximum is a legitimate way to keep the robot away from
+  fixtures near the belt. Never \emph{extend} them beyond the Delta X2
+  specification (X/Y $\pm 160$\,mm, Z $[-200, 0]$\,mm; see
+  Appendix~\ref{app:gcode}).
+\end{warningbox}
+
+\section{Section \texttt{[conveyor]}}
+\index{configuration!conveyor@\texttt{[conveyor]}}\index{conveyor}\index{belt speed}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    port\_name & /dev/ttyUSB1 & Serial device of the belt controller. \\
+    baud\_rate & 115200 & Serial speed. \\
+    default\_speed & 1000 & Raw \cfg{S} value sent with \cfg{M3} on start. \\
+    speed\_mm\_s & 100.0 & Belt speed in robot coordinates, mm/s. Signed:
+      positive means objects travel toward $+Y$. Used by the trajectory
+      planner. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[conveyor]} keys}
+\end{table}
+
+\section{Section \texttt{[camera]}}
+\index{configuration!camera@\texttt{[camera]}}\index{camera}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    device\_id & 0 & OpenCV device index (\cfg{/dev/video0} $\rightarrow$ 0). \\
+    width, height & 1280, 720 & Requested capture resolution. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[camera]} keys}
+\end{table}
+
+\section{Section \texttt{[sorting]}}
+\index{configuration!sorting@\texttt{[sorting]}}\index{drop bin}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    drop\_x, drop\_y, drop\_z & 150, 0, $-100$ & Position of the drop bin.
+      Must be inside the robot workspace. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[sorting]} keys}
+\end{table}
+
+\section{Section \texttt{[vision]}}
+\index{configuration!vision@\texttt{[vision]}}\index{threshold}\index{detection}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    threshold & 60.0 & Fixed binary threshold (0--255) applied after
+      grayscale conversion and blur. \\
+    min\_area, max\_area & 500, 10000 & Contour area window in pixels$^2$
+      for a blob to count as an object. \\
+    invert & true & \cfg{true}: objects darker than the belt;
+      \cfg{false}: objects lighter than the belt. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[vision]} keys}
+\end{table}
+
+\section{Camera calibration}
+\index{calibration}\index{camera!calibration}\index{coordinate transform}%
+The pixel-to-robot transform is affine: scale (mm per pixel), rotation
+and offset. The built-in default assumes the camera's optical centre maps
+to the robot origin at 0.5\,mm/px for a 1280$\times$720 image. A guided
+calibration wizard is planned (see the TODO list); until it exists, the
+parameters in \cfg{src/vision/calibration.rs} must be adjusted to match
+the physical camera mounting.
+
+\section{Complete example}
+\begin{lstlisting}[language=TOML]
+[robot]
+port_name = "/dev/ttyUSB0"
+baud_rate = 115200
+home_on_connect = true
+x_min = -150.0
+x_max = 150.0
+y_min = -150.0
+y_max = 150.0
+z_min = -200.0
+z_max = 0.0
+z_pick = -180.0
+z_travel = -150.0
+feed_rate = 15000
+
+[conveyor]
+port_name = "/dev/ttyUSB1"
+baud_rate = 115200
+default_speed = 1000
+speed_mm_s = 100.0
+
+[camera]
+device_id = 0
+width = 1280
+height = 720
+
+[sorting]
+drop_x = 150.0
+drop_y = 0.0
+drop_z = -100.0
+
+[vision]
+threshold = 60.0
+min_area = 500.0
+max_area = 10000.0
+invert = true
+\end{lstlisting}

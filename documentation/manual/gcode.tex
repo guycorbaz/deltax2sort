@@ -1,0 +1,183 @@
+\chapter{Delta X2 G-code Protocol Reference}
+\label{app:gcode}
+\index{G-code}\index{protocol!serial}%
+
+This appendix is the authoritative description of the G-code dialect and
+communication protocol of the Delta X2 robot as used by this project.
+
+\section{Communication protocol}
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} \\
+    \midrule
+    Transport & USB serial (CDC), typically \cfg{/dev/ttyUSB*} or \cfg{/dev/ttyACM*} \\
+    Baud rate & 115\,200 \\
+    Line ending & \cfg{\textbackslash n} (newline) \\
+    Handshaking & The robot answers commands; for critical synchronisation
+      use the \cfg{FEEDBACK} parameter (section~\ref{sec:gcode-feedback}). \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Serial link parameters}
+\end{table}
+
+\section{Identification and status}
+
+\subsection{\texttt{IsDelta}}
+\index{G-code!IsDelta@\texttt{IsDelta}}\index{handshake}%
+Queries the device to confirm it is a Delta X robot.
+\begin{itemize}
+  \item \textbf{Response:} \cfg{YesDelta}
+\end{itemize}
+The application performs this handshake on every connection and refuses
+to proceed if the answer does not arrive.
+
+\subsection{\texttt{DeltaState}}
+\index{G-code!DeltaState@\texttt{DeltaState}}%
+Queries the current operating state of the robot.
+
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Response} & \textbf{Meaning} \\
+    \midrule
+    \cfg{Free} & Idle and ready. \\
+    \cfg{Running} & Executing a command. \\
+    \cfg{Wait} & Waiting for input or synchronisation. \\
+    \cfg{Almostdone} & Near the end of a movement. \\
+    \cfg{Done} & Movement or command completed. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{DeltaState} responses}
+\end{table}
+
+\subsection{\texttt{Position}}
+\index{G-code!Position@\texttt{Position}}\index{position feedback}%
+Returns the current coordinates of the robot.
+\begin{itemize}
+  \item \textbf{Response format:} \cfg{X:<val> Y:<val> Z:<val> W:<val> U:<val>}
+\end{itemize}
+
+\begin{notebox}
+  \cfg{Position} is not used by the application yet; it is the basis for
+  the planned belt-motion compensation (robot position feedback for the
+  trajectory planner --- see \cfg{documentation/TODO.md}).
+\end{notebox}
+
+\section{Movement commands}
+
+\subsection{\texttt{G00} / \texttt{G01} --- linear movement}
+\index{G-code!G01@\texttt{G01}}\index{feed rate}\index{movement}%
+Moves the end-effector to the specified coordinates.
+\begin{itemize}
+  \item \textbf{Syntax:} \cfg{G01 X<val> Y<val> Z<val> F<speed>}
+  \item \cfg{F} is the feed rate in mm/min (configured via
+    \cfg{robot.feed\_rate}).
+\end{itemize}
+\begin{lstlisting}
+G01 X10.5 Y-20.0 Z-150.0 F2000
+\end{lstlisting}
+
+\subsection{\texttt{G28} --- homing}
+\index{G-code!G28@\texttt{G28}}\index{homing}%
+Moves all axes to their home position (top endstops).
+\begin{itemize}
+  \item \textbf{Origin (X0 Y0 Z0):} after homing, the robot is positioned
+    at the top centre.
+  \item \textbf{Z axis:} moves downward (negative values). Z$=0$ is the
+    top; Z$=-200$ is near the bottom of the workspace.
+\end{itemize}
+
+\subsection{\texttt{G90} / \texttt{G91} --- positioning mode}
+\index{G-code!G90@\texttt{G90}}\index{G-code!G91@\texttt{G91}}%
+\begin{itemize}
+  \item \cfg{G90}: interpret subsequent coordinates as absolute positions
+    relative to the origin. The application sets this mode right after
+    homing.
+  \item \cfg{G91}: interpret subsequent coordinates as displacements from
+    the current position (useful for jogging).
+\end{itemize}
+
+\section{Synchronisation --- \texttt{FEEDBACK}}
+\label{sec:gcode-feedback}
+\index{G-code!FEEDBACK@\texttt{FEEDBACK}}\index{synchronisation}%
+\cfg{FEEDBACK:<string>} can be appended to any G-code command. The robot
+echoes \cfg{<string>} back on the serial port once the command has been
+\emph{physically executed} --- not merely received.
+
+\begin{lstlisting}
+G01 X0 Y0 Z-50 FEEDBACK:done
+\end{lstlisting}
+Response (after the move finishes):
+\begin{lstlisting}
+done
+\end{lstlisting}
+
+\begin{notebox}
+  The robot driver appends a unique \cfg{FEEDBACK:sync\_<n>} id to every
+  command and blocks until the echo returns. This is what makes a
+  completed \cfg{move\_to} call mean ``the arm has arrived'', and it is
+  why every command has an overall timeout: a lost echo surfaces as an
+  error instead of a hang.
+\end{notebox}
+
+\section{End effector controls}
+\index{G-code!M03@\texttt{M03}}\index{G-code!M05@\texttt{M05}}\index{G-code!M112@\texttt{M112}}\index{gripper}\index{emergency stop}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Command} & \textbf{Effect} \\
+    \midrule
+    \cfg{M03} & Output on (open gripper / start vacuum). \\
+    \cfg{M05} & Output off. \\
+    \cfg{M112} & Emergency stop (used by the E-stop path). \\
+    \bottomrule
+  \end{tabularx}
+  \caption{M-codes}
+\end{table}
+
+\section{Physical workspace (SP-X2)}
+\index{workspace!physical limits}\index{SP-X2}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Axis} & \textbf{Range} \\
+    \midrule
+    X & $-160$\,mm to $+160$\,mm \\
+    Y & $-160$\,mm to $+160$\,mm \\
+    Z & $-200$\,mm to $0$\,mm ($0$ at the top) \\
+    Working diameter & 320\,mm \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Workspace of the SP-X2 model}
+\end{table}
+
+These are the hard physical limits; the configured workspace
+(\cfg{[robot]} section, chapter on configuration) must always be equal to
+or smaller than them.
+
+\section{Quick reference}
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Command} & \textbf{Meaning} \\
+    \midrule
+    \cfg{IsDelta} & Handshake; the robot answers \cfg{YesDelta}. \\
+    \cfg{DeltaState} & Operating state query. \\
+    \cfg{Position} & Current coordinates query. \\
+    \cfg{G28} & Home all axes (to the top; X0 Y0 Z0 afterwards). \\
+    \cfg{G90} / \cfg{G91} & Absolute / relative positioning mode. \\
+    \cfg{G01 X.. Y.. Z.. F..} & Linear move at feed rate \cfg{F} (mm/min). \\
+    \cfg{M03} / \cfg{M05} & End effector (gripper/pump) on / off. \\
+    \cfg{M112} & Emergency stop. \\
+    \cfg{FEEDBACK:<id>} & Echoed back when the command has physically
+      completed. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Protocol summary}
+\end{table}

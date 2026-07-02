@@ -1,0 +1,40 @@
+% =====================================================================
+%  Delta X2 LEGO Sorting System — Operations Manual
+%
+%  Driver file. The actual content lives in manual/, one file per
+%  chapter:
+%    manual/preamble.tex       packages, colors, styles, macros
+%    manual/titlepage.tex      title page
+%    manual/overview.tex       system overview & safety design
+%    manual/installation.tex   installation & troubleshooting
+%    manual/configuration.tex  Settings.toml reference
+%    manual/operation.tex      CLI, UI, E-stop, checklists
+%    manual/maintenance.tex    layout, tests, dev workflow
+%    manual/gcode.tex          appendix: Delta X2 G-code protocol
+%
+%  Build:  latexmk -pdf manual.tex
+% =====================================================================
+\documentclass[11pt,a4paper,twoside,open=right,numbers=noenddot,chapterprefix=false]{scrbook}
+
+\input{manual/preamble}
+
+\begin{document}
+
+\frontmatter
+\input{manual/titlepage}
+\tableofcontents
+
+\mainmatter
+\input{manual/overview}
+\input{manual/installation}
+\input{manual/configuration}
+\input{manual/operation}
+\input{manual/maintenance}
+
+\appendix
+\input{manual/gcode}
+
+\backmatter
+\printindex
+
+\end{document}

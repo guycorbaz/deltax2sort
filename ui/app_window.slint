@@ -1,0 +1,170 @@
+import {
+    Button,
+    VerticalBox,
+    HorizontalBox,
+    StandardListView,
+} from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "Delta X2 LEGO Sorting System";
+    min-width: 800px;
+    min-height: 600px;
+    background: #121212;
+
+    in property <image> camera-feed: @image-url("");
+    in property <string> robot-status: "Disconnected";
+    in property <string> conveyor-status: "Stopped";
+    in property <int> bricks-sorted: 0;
+    in property <bool> is-running: false;
+
+    callback start-clicked();
+    callback stop-clicked();
+    callback home-clicked();
+    callback estop-clicked();
+
+    VerticalBox {
+        padding: 20px;
+        spacing: 15px;
+
+        // Header
+        HorizontalBox {
+            Text {
+                text: "LEGO Sorting Terminal";
+                font-size: 24px;
+                color: #ffffff;
+                font-weight: 700;
+            }
+
+            Rectangle { } // Spacer
+            Text {
+                text: "Status: " + robot-status;
+                color: robot-status == "Connected" ? #4caf50 : #f44336;
+                vertical-alignment: center;
+                font-weight: 600;
+            }
+        }
+
+        HorizontalBox {
+            spacing: 20px;
+            
+            // Left Column: Live Feed & Analytics
+            VerticalBox {
+                spacing: 15px;
+                
+                // Camera View
+                Rectangle {
+                    background: #1e1e1e;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #333333;
+                    min-height: 400px;
+                    if (camera-feed.width > 0): Image {
+                        source: camera-feed;
+                        width: 100%;
+                        height: 100%;
+                    }
+                    if (camera-feed.width == 0): Text {
+                        text: "Camera Feed Disconnected";
+                        color: #555555;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                // Stats Box
+                Rectangle {
+                    background: #1e1e1e;
+                    border-radius: 8px;
+                    height: 80px;
+                    HorizontalBox {
+                        padding: 15px;
+                        VerticalBox {
+                            Text {
+                                text: "Total Sorted";
+                                color: #aaaaaa;
+                                font-size: 12px;
+                            }
+
+                            Text {
+                                text: bricks-sorted;
+                                color: #ffffff;
+                                font-size: 20px;
+                                font-weight: 700;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 1px;
+                            background: #333333;
+                        } // Separator
+                        VerticalBox {
+                            Text {
+                                text: "Conveyor";
+                                color: #aaaaaa;
+                                font-size: 12px;
+                            }
+
+                            Text {
+                                text: conveyor-status;
+                                color: #4fc3f7;
+                                font-size: 20px;
+                                font-weight: 700;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Right Column: Controls
+            Rectangle {
+                width: 200px;
+                background: #1e1e1e;
+                border-radius: 8px;
+                VerticalBox {
+                    spacing: 10px;
+                    padding: 10px;
+                    Text {
+                        text: "System Controls";
+                        color: #ffffff;
+                        font-size: 16px;
+                        font-weight: 600;
+                    }
+
+                    Button {
+                        text: is-running ? "Pause System" : "Start Sorting";
+                        primary: true;
+                        clicked => {
+                            root.start-clicked();
+                        }
+                    }
+
+                    Button {
+                        text: "Stop Conveyor";
+                        enabled: is-running;
+                        clicked => {
+                            root.stop-clicked();
+                        }
+                    }
+
+                    Button {
+                        text: "Home Robot";
+                        enabled: !is-running;
+                        clicked => {
+                            root.home-clicked();
+                        }
+                    }
+
+                    Rectangle { } // Spacer
+
+                    Button {
+                        text: "EMERGENCY STOP";
+                        primary: true;
+                        clicked => {
+                            root.estop-clicked();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

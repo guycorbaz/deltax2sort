@@ -1,0 +1,14 @@
+# Rust
+/target
+
+# LaTeX build artifacts (manual.pdf itself is committed)
+documentation/*.aux
+documentation/*.fdb_latexmk
+documentation/*.fls
+documentation/*.idx
+documentation/*.ilg
+documentation/*.ind
+documentation/*.log
+documentation/*.out
+documentation/*.toc
+documentation/*.synctex.gz

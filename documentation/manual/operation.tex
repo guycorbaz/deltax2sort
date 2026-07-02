@@ -1,0 +1,96 @@
+\chapter{Operation}
+
+\section{Command line}
+\index{command line}\index{mock mode}\index{operation}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Option} & \textbf{Effect} \\
+    \midrule
+    \cfg{-m}, \cfg{--mock} & Use simulated robot, conveyor and camera. No
+      hardware required. \\
+    \cfg{-c}, \cfg{--config <path>} & Configuration file
+      (default \cfg{Settings.toml}). \\
+    \cfg{-h}, \cfg{--help} & Show help. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Command-line options}
+\end{table}
+
+\index{logging}\index{RUST LOG@\texttt{RUST\_LOG}}%
+Logging uses \cfg{env\_logger}; set \cfg{RUST\_LOG} to control verbosity:
+\begin{lstlisting}[language=bash]
+RUST_LOG=info cargo run -- --mock      # normal operation
+RUST_LOG=debug cargo run               # includes G-code level tracing
+\end{lstlisting}
+
+\section{Startup sequence}
+\index{startup sequence}\index{handshake}\index{homing}%
+On start the application: loads and validates the configuration; connects
+to the robot (\cfg{IsDelta} handshake, Appendix~\ref{app:gcode}) and homes
+it if \cfg{home\_on\_connect} is set; connects to the conveyor; acquires
+the emergency-stop handles; connects to the camera; starts the
+orchestrator; and finally opens the operator UI. Any failure in this chain
+aborts startup with a message identifying the failing device.
+
+\section{Operator interface}
+\index{user interface}\index{controls}\index{dashboard}%
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Control} & \textbf{Behaviour} \\
+    \midrule
+    Start Sorting / Pause System & Toggles the conveyor. Starts the belt at
+      \cfg{default\_speed}; pressing again stops it. The label reflects the
+      current state. \\
+    Stop Conveyor & Stops the belt (enabled while running). \\
+    Home Robot & Queues a homing command through the orchestrator (enabled
+      while the system is not running). \\
+    EMERGENCY STOP & Immediately halts robot and conveyor and clears all
+      queued work. See section~\ref{sec:estop}. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{UI controls}
+\end{table}
+
+The dashboard shows the robot connection status, the conveyor state and
+the total number of sorted bricks. The live camera feed and detection
+overlays are not wired up yet (see the TODO list).
+
+\section{Emergency stop and recovery}
+\label{sec:estop}
+\index{emergency stop}\index{recovery}\index{M112@\texttt{M112}}%
+Pressing \textbf{EMERGENCY STOP}:
+\begin{enumerate}
+  \item writes \cfg{M112} to the robot and \cfg{M5} to the conveyor on
+    dedicated serial handles, bypassing every queue and lock;
+  \item clears the orchestrator's instruction queue and pauses it;
+  \item marks both devices as \cfg{E-STOP} in the UI.
+\end{enumerate}
+
+To recover after an E-stop:
+\begin{enumerate}
+  \item Remove the physical cause (jam, obstruction, misplaced fixture).
+  \item Restart the application. The robot controller may also need a
+    power cycle after \cfg{M112}, depending on firmware.
+  \item Home the robot before resuming production.
+\end{enumerate}
+
+\begin{notebox}
+  If a robot command fails during operation (timeout, serial error, robot
+  fault), the orchestrator clears its queue and pauses itself
+  automatically rather than continuing with a desynchronised state. The
+  incident is logged with the failing command.
+\end{notebox}
+
+\section{Routine operation checklist}
+\index{checklist}%
+\begin{enumerate}
+  \item Check that the belt is empty and the workspace is clear.
+  \item Start the application; confirm \emph{Status: Connected}.
+  \item If not homed automatically, press \emph{Home Robot}.
+  \item Press \emph{Start Sorting}.
+  \item Supervise the first picks; keep a hand near the E-stop.
+\end{enumerate}

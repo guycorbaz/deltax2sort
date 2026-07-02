@@ -1,0 +1,102 @@
+% ---------------------------------------------------------------------
+%  Shared preamble: packages, colors, styles, callout boxes, macros
+% ---------------------------------------------------------------------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage[margin=2.4cm,footskip=1.2cm]{geometry}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc}
+\usepackage[most]{tcolorbox}
+\usepackage[automark]{scrlayer-scrpage}
+\usepackage{imakeidx}
+\makeindex[intoc]
+\usepackage{hyperref}
+
+% ----------------------------------------------------------------- colors
+\definecolor{primary}{HTML}{0B5394}   % deep blue
+\definecolor{primarydark}{HTML}{102A43}
+\definecolor{accent}{HTML}{E8590C}    % safety orange
+\definecolor{okgreen}{HTML}{2B8A3E}
+\definecolor{slate}{HTML}{5C677D}
+\definecolor{codebg}{HTML}{F5F7FA}
+\definecolor{codeframe}{HTML}{D9E2EC}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primary,
+  urlcolor=primary,
+  citecolor=primary,
+  pdftitle={Delta X2 LEGO Sorting System - Operations Manual},
+  pdfauthor={deltax2sort project},
+}
+
+% ------------------------------------------------------------- typography
+\addtokomafont{chapter}{\color{primarydark}}
+\addtokomafont{section}{\color{primary}}
+\addtokomafont{subsection}{\color{primary}}
+\addtokomafont{pagehead}{\color{slate}\small}
+\addtokomafont{pagenumber}{\color{slate}\small}
+\setkomafont{caption}{\small\color{slate}}
+\setkomafont{captionlabel}{\small\bfseries\color{primary}}
+
+\clearpairofpagestyles
+\ihead{\headmark}
+\ohead{\pagemark}
+\ofoot{\textcolor{slate}{\footnotesize deltax2sort 0.1.0}}
+
+% --------------------------------------------------------------- listings
+\lstdefinelanguage{TOML}{
+  comment=[l]{\#},
+  morekeywords={true,false},
+  morestring=[b]",
+  sensitive=true,
+}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{codeframe},
+  keywordstyle=\color{primary}\bfseries,
+  commentstyle=\color{slate}\itshape,
+  stringstyle=\color{okgreen},
+  breaklines=true,
+  showstringspaces=false,
+  aboveskip=0.9em,
+  belowskip=0.9em,
+  columns=fullflexible,
+  keepspaces=true,
+}
+
+% ---------------------------------------------------------------- callouts
+\newtcolorbox{warningbox}{enhanced,breakable,
+  colback=accent!6,colframe=accent,boxrule=0.6pt,arc=2pt,
+  left=8pt,right=8pt,top=6pt,bottom=6pt,
+  title={\bfseries Safety warning},fonttitle=\sffamily,
+  coltitle=white,colbacktitle=accent}
+\newtcolorbox{notebox}{enhanced,breakable,
+  colback=primary!5,colframe=primary,boxrule=0.6pt,arc=2pt,
+  left=8pt,right=8pt,top=6pt,bottom=6pt,
+  title={\bfseries Note},fonttitle=\sffamily,
+  coltitle=white,colbacktitle=primary}
+\newtcolorbox{tipbox}{enhanced,breakable,
+  colback=okgreen!6,colframe=okgreen,boxrule=0.6pt,arc=2pt,
+  left=8pt,right=8pt,top=6pt,bottom=6pt,
+  title={\bfseries Tip},fonttitle=\sffamily,
+  coltitle=white,colbacktitle=okgreen}
+
+% ------------------------------------------- key/value reference tables
+\newcolumntype{K}{>{\ttfamily\small}p{3.2cm}}
+\newcolumntype{T}{>{\small}p{2.0cm}}
+\newcolumntype{D}{>{\small\raggedright\arraybackslash}X}
+
+\newcommand{\cfg}[1]{\texttt{#1}}

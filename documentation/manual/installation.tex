@@ -1,0 +1,93 @@
+\chapter{Installation}
+
+\section{Supported platform}
+Linux is the supported platform; Ubuntu 24.04 or newer is recommended.
+Other distributions work if the packages below are available.
+
+\section{System packages}
+\index{installation}\index{system packages}\index{OpenCV}\index{libclang}\index{libudev}%
+The build needs a C/C++ toolchain, OpenCV development headers, libclang
+(for generating the OpenCV Rust bindings) and libudev (for serial-port
+discovery):
+
+\begin{lstlisting}[language=bash]
+sudo apt update && sudo apt install -y \
+    clang libclang-dev llvm-dev \
+    libudev-dev libopencv-dev pkg-config
+\end{lstlisting}
+
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{lD}
+    \toprule
+    \textbf{Package} & \textbf{Why it is needed} \\
+    \midrule
+    \cfg{clang}, \cfg{libclang-dev}, \cfg{llvm-dev} &
+      The \cfg{opencv} crate generates Rust bindings from the C++ headers
+      at build time using libclang. \\
+    \cfg{libopencv-dev} & OpenCV itself (video capture, image processing). \\
+    \cfg{libudev-dev} & Required by the \cfg{serialport} crate for USB/serial
+      device discovery. \\
+    \cfg{pkg-config} & Lets the build scripts locate the installed libraries. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{System package roles}
+\end{table}
+
+\section{Rust toolchain}
+\index{Rust!toolchain}\index{rustup}%
+Install the stable Rust toolchain via \href{https://rustup.rs}{rustup}:
+\begin{lstlisting}[language=bash]
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+\end{lstlisting}
+
+\section{Serial port permissions}
+\index{serial port!permissions}\index{dialout group@\texttt{dialout} group}%
+On Linux the serial devices belong to the \cfg{dialout} group:
+\begin{lstlisting}[language=bash]
+sudo usermod -a -G dialout $USER
+# Log out and back in for the change to take effect.
+\end{lstlisting}
+
+\section{Building and first run}
+\index{building}\index{cargo@\texttt{cargo}}\index{mock mode}%
+\begin{lstlisting}[language=bash]
+cd deltax2sort
+cargo build            # compile (also builds the Slint UI)
+cargo test             # run the unit test suite
+cargo run -- --mock    # start with simulated hardware
+cargo run              # start against the real hardware
+\end{lstlisting}
+
+\begin{tipbox}
+  Always bring the system up in mock mode first
+  (\cfg{cargo run -- --mock}) after installing or changing the
+  configuration. Mock mode exercises the full control flow --- UI,
+  orchestrator, queueing, E-stop --- without moving any hardware.
+\end{tipbox}
+
+\section{Troubleshooting}
+\index{troubleshooting}\index{LIBCLANG PATH@\texttt{LIBCLANG\_PATH}}%
+\begin{description}[style=nextline]
+  \item[\cfg{clang-sys} cannot find \cfg{libclang}]
+    Install \cfg{libclang-dev}. If only a versioned library such as
+    \cfg{libclang-21.so.1} exists, create a symlink named
+    \cfg{libclang.so} (the repository keeps one under \cfg{libs/}) and
+    point the build at it:
+    \begin{lstlisting}[language=bash]
+ln -sf /usr/lib/x86_64-linux-gnu/libclang-21.so.1 libs/libclang.so
+LIBCLANG_PATH=$PWD/libs cargo build
+    \end{lstlisting}
+  \item[\cfg{libudev-sys} build failure]
+    \cfg{libudev-dev} is missing; install it and rebuild.
+  \item[OpenCV build failure]
+    Ensure \cfg{libopencv-dev} and \cfg{pkg-config} are installed and that
+    \cfg{pkg-config --modversion opencv4} prints a version.
+  \item[\emph{Permission denied} opening \cfg{/dev/ttyUSB*}]
+    Your user is not in the \cfg{dialout} group yet, or you have not
+    logged out and back in.
+  \item[Robot fails the \cfg{IsDelta} handshake]
+    Check the port assignment (robot vs.\ conveyor may be swapped), the
+    baud rate, and that no other program holds the port open. See
+    Appendix~\ref{app:gcode} for the handshake protocol.
+\end{description}

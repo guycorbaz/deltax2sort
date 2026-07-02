@@ -1,0 +1,48 @@
+# Delta X2 LEGO Sorting System configuration.
+# Values are validated at startup; anything that would command the robot
+# outside its physical workspace is rejected before hardware is touched.
+
+[robot]
+port_name = "/dev/ttyUSB0"
+baud_rate = 115200
+home_on_connect = true
+# Workspace bounds (mm). Delta X2 spec: X/Y in [-160, 160], Z in [-200, 0].
+x_min = -150.0
+x_max = 150.0
+y_min = -150.0
+y_max = 150.0
+z_min = -200.0
+z_max = 0.0
+# Pick height (belt surface) and safe travel height, both within [z_min, z_max].
+z_pick = -180.0
+z_travel = -150.0
+# G-code feed rate in mm/min (F parameter of G01).
+feed_rate = 15000
+
+[conveyor]
+port_name = "/dev/ttyUSB1"
+baud_rate = 115200
+# Raw S-value sent with the M3 start command.
+default_speed = 1000
+# Belt speed in robot coordinates, mm/s. Signed: positive = objects move toward +Y.
+speed_mm_s = 100.0
+
+[camera]
+device_id = 0
+width = 1280
+height = 720
+
+[sorting]
+# Drop bin position (must be inside the robot workspace).
+drop_x = 150.0
+drop_y = 0.0
+drop_z = -100.0
+
+[vision]
+# Fixed binary threshold (0-255) applied after grayscale + blur.
+threshold = 60.0
+# Contour area limits (pixels²) for a blob to count as an object.
+min_area = 500.0
+max_area = 10000.0
+# true: objects darker than the belt; false: lighter.
+invert = true

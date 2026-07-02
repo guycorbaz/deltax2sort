@@ -1,0 +1,44 @@
+% ---------------------------------------------------------------------
+%  Title page
+% ---------------------------------------------------------------------
+\begin{titlepage}
+  \begin{tikzpicture}[remember picture,overlay]
+    \fill[primarydark] (current page.north west) rectangle
+      ([yshift=-6.2cm]current page.north east);
+    \fill[accent] ([yshift=-6.2cm]current page.north west) rectangle
+      ([yshift=-6.45cm]current page.north east);
+    \node[anchor=west,text=white,font=\sffamily\bfseries\Huge]
+      at ([xshift=2.4cm,yshift=-3.0cm]current page.north west)
+      {Delta X2 LEGO Sorting System};
+    \node[anchor=west,text=white!85!primary,font=\sffamily\Large]
+      at ([xshift=2.4cm,yshift=-4.4cm]current page.north west)
+      {Operations Manual};
+    \node[anchor=west,text=white!70!primary,font=\sffamily]
+      at ([xshift=2.4cm,yshift=-5.4cm]current page.north west)
+      {Installation \textbullet{} Configuration \textbullet{} Operation};
+    \node[anchor=south west,text=slate,font=\sffamily\small]
+      at ([xshift=2.4cm,yshift=2.2cm]current page.south west)
+      {\begin{tabular}{@{}l@{}}
+        Software version 0.1.0\\
+        Document revision 1.1 --- July 2026\\
+        Target platform: Linux (Ubuntu 24.04+)
+      \end{tabular}};
+  \end{tikzpicture}
+  \vspace*{7cm}
+  \begin{center}
+    \begin{tikzpicture}[
+        box/.style={draw=primary,fill=primary!8,rounded corners=3pt,
+          minimum width=2.9cm,minimum height=1.05cm,font=\sffamily\small,align=center},
+        flow/.style={-{Stealth[length=2.5mm]},thick,primary}]
+      \node[box] (cam) {USB Camera};
+      \node[box,right=1.1cm of cam] (vision) {Vision\\pipeline};
+      \node[box,right=1.1cm of vision] (orch) {Orchestrator};
+      \node[box,right=1.1cm of orch] (robot) {Delta X2\\robot};
+      \node[box,below=0.8cm of orch] (belt) {Conveyor belt};
+      \draw[flow] (cam) -- (vision);
+      \draw[flow] (vision) -- (orch);
+      \draw[flow] (orch) -- (robot);
+      \draw[flow] (orch) -- (belt);
+    \end{tikzpicture}
+  \end{center}
+\end{titlepage}
