@@ -73,9 +73,14 @@ hardening pass (see below). Check items off and re-date when working here.
 
 ## Housekeeping
 
+- [ ] Run `cargo clippy` for the first time and triage the existing warning
+      stock (status unverified as of 2026-07-03; not part of the local gate —
+      see `_bmad-output/project-context.md`).
+- [ ] Decide the Raspberry Pi build path (cross-compile from x86 vs build on
+      the Pi 4/5); until decided, no deployment tooling in the repo.
 - [ ] Deduplicate documentation: `implementation_plan.md` and
-      `walkthrough.md` exist both at the repo root and in `documentation/`;
-      root `requirement.md` is empty. Keep one copy under `documentation/`.
+      `walkthrough.md` exist both at the repo root and in `docs/`;
+      root `requirement.md` is empty. Keep one copy under `docs/`.
 - [ ] More tests: detector on fixture images (plan step 9), DeltaX2
       protocol against a scripted fake serial port, orchestrator run-loop
       integration test with mocks (plan step 16 verification).

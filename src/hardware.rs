@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use log::{debug, info, warn};
 use opencv::{core, prelude::*, videoio};
@@ -177,7 +177,9 @@ impl RobotController for MockRobot {
     }
 
     fn estop_handle(&self) -> Option<Arc<dyn EmergencyStop>> {
-        Some(Arc::new(MockEStop { label: "mock robot" }))
+        Some(Arc::new(MockEStop {
+            label: "mock robot",
+        }))
     }
 }
 
@@ -291,8 +293,8 @@ impl RobotController for DeltaX2 {
         );
         let port_name = self.port_name.clone();
         let baud_rate = self.baud_rate;
-        let port = tokio::task::spawn_blocking(
-            move || -> Result<Box<dyn serialport::SerialPort>> {
+        let port =
+            tokio::task::spawn_blocking(move || -> Result<Box<dyn serialport::SerialPort>> {
                 let mut port = serialport::new(&port_name, baud_rate)
                     .timeout(Duration::from_millis(2000))
                     .open()?;
@@ -330,9 +332,8 @@ impl RobotController for DeltaX2 {
                 }
                 drop(reader);
                 Ok(port)
-            },
-        )
-        .await??;
+            })
+            .await??;
 
         // Dedicated handle for the emergency stop path.
         let estop = port.try_clone()?;
@@ -456,14 +457,13 @@ impl ConveyorController for SerialConveyor {
         );
         let port_name = self.port_name.clone();
         let baud_rate = self.baud_rate;
-        let port = tokio::task::spawn_blocking(
-            move || -> Result<Box<dyn serialport::SerialPort>> {
+        let port =
+            tokio::task::spawn_blocking(move || -> Result<Box<dyn serialport::SerialPort>> {
                 Ok(serialport::new(&port_name, baud_rate)
                     .timeout(Duration::from_millis(1000))
                     .open()?)
-            },
-        )
-        .await??;
+            })
+            .await??;
         let estop = port.try_clone()?;
         self.port = Some(Arc::new(StdMutex::new(port)));
         self.estop_port = Some(Arc::new(StdMutex::new(estop)));
@@ -554,7 +554,7 @@ impl OpencvCamera {
 // SAFETY: `VideoCapture` is only ever accessed through `&mut self` methods
 // and the camera is owned by a single task at a time; the impls exist only
 // because `CameraDriver` requires Send + Sync. To be replaced by a dedicated
-// camera thread + channel when the vision loop lands (documentation/TODO.md).
+// camera thread + channel when the vision loop lands (docs/TODO.md).
 unsafe impl Send for OpencvCamera {}
 unsafe impl Sync for OpencvCamera {}
 
@@ -606,8 +606,12 @@ impl CameraDriver for MockCamera {
     }
 
     async fn get_frame(&mut self) -> Result<core::Mat> {
-        let frame =
-            core::Mat::new_rows_cols_with_default(720, 1280, core::CV_8UC3, core::Scalar::all(0.0))?;
+        let frame = core::Mat::new_rows_cols_with_default(
+            720,
+            1280,
+            core::CV_8UC3,
+            core::Scalar::all(0.0),
+        )?;
         sleep(Duration::from_millis(33)).await;
         Ok(frame)
     }

@@ -76,7 +76,7 @@ Key sections:
 - `src/vision/`: Object detection, tracking, and calibration logic.
 - `src/orchestrator.rs`: Trajectory planning and command queueing.
 - `ui/app_window.slint`: The Slint-based graphical user interface.
-- `documentation/`: Detailed planning and specifications.
+- `docs/`: Detailed planning and specifications.
 
 ## 6. Troubleshooting
 

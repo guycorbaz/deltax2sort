@@ -100,7 +100,10 @@ async fn main() -> anyhow::Result<()> {
         info!("Using Mock Camera");
         Box::new(MockCamera::new())
     } else {
-        info!("Connecting to real Camera (device {})", config.camera.device_id);
+        info!(
+            "Connecting to real Camera (device {})",
+            config.camera.device_id
+        );
         Box::new(OpencvCamera::new(
             config.camera.device_id,
             config.camera.width,

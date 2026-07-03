@@ -45,7 +45,7 @@ impl BlobDetector {
 
         // Fixed binary threshold from config. `invert` selects whether
         // objects are darker (INV) or lighter than the belt. Adaptive/OTSU
-        // thresholding is a possible future improvement (documentation/TODO.md).
+        // thresholding is a possible future improvement (docs/TODO.md).
         let threshold_type = if self.invert {
             imgproc::THRESH_BINARY_INV
         } else {
@@ -73,7 +73,7 @@ impl BlobDetector {
                 let rect = imgproc::bounding_rect(&contour)?;
 
                 objects.push(DetectedObject {
-                    id: 0,           // Assigned by Tracker
+                    id: 0, // Assigned by Tracker
                     rect,
                     world_pos: None, // Assigned by Calibrator
                     class: ObjectClass::Unknown,

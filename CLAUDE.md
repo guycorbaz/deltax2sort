@@ -2,9 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Also read `_bmad-output/project-context.md`** — the maintained rules file for AI agents (safety invariants, stack constraints, testing/workflow rules). Its Safety Invariants section overrides everything else.
+
 ## Project Overview
 
-Rust control application for a Delta X2 delta robot that sorts LEGO bricks off a conveyor belt using a USB camera and OpenCV vision. GUI is built with Slint. Development follows the phased plan in `documentation/implementation_plan.md`; open work items are tracked in `documentation/TODO.md` (keep it updated when completing work).
+Rust control application for a Delta X2 delta robot that sorts LEGO bricks off a conveyor belt using a USB camera and OpenCV vision. GUI is built with Slint. Development follows the phased plan in `docs/implementation_plan.md`; open work items are tracked in `docs/TODO.md` (keep it updated when completing work).
 
 ## Commands
 
@@ -14,7 +16,7 @@ cargo test                  # Unit tests: config validation, calibration, planne
 cargo run -- --mock         # Run with mock robot/conveyor/camera (no hardware needed)
 cargo run                   # Run against real hardware (serial ports + camera)
 RUST_LOG=info cargo run -- --mock             # env_logger; use RUST_LOG=debug for G-code tracing
-cd documentation && latexmk -pdf manual.tex   # Build the operations manual (PDF)
+cd docs && latexmk -pdf manual.tex   # Build the operations manual (PDF)
 ```
 
 **System dependencies** (Ubuntu): `clang libclang-dev llvm-dev libudev-dev libopencv-dev pkg-config`. If the system only ships a versioned `libclang-N.so.1` (as after OS upgrades), the build needs `LIBCLANG_PATH=$PWD/libs` with the `libs/libclang.so` symlink pointing at it. Serial access requires membership in the `dialout` group.
@@ -36,11 +38,11 @@ Configuration lives in `Settings.toml` (`src/app_config.rs`): `[robot]` (ports, 
 
 ## Delta X2 protocol
 
-Authoritative reference: Appendix "Delta X2 G-code Protocol Reference" in the manual (`documentation/manual/gcode.tex`). Key facts: handshake `IsDelta`→`YesDelta`; `FEEDBACK:<id>` echo marks physical completion; workspace X/Y ∈ [-160, 160] mm, Z ∈ [-200, 0] (Z0 = top, homing `G28` goes to top center); gripper `M03`/`M05`; E-stop `M112`.
+Authoritative reference: Appendix "Delta X2 G-code Protocol Reference" in the manual (`docs/manual/gcode.tex`). Key facts: handshake `IsDelta`→`YesDelta`; `FEEDBACK:<id>` echo marks physical completion; workspace X/Y ∈ [-160, 160] mm, Z ∈ [-200, 0] (Z0 = top, homing `G28` goes to top center); gripper `M03`/`M05`; E-stop `M112`.
 
 ## Documentation
 
-- `documentation/manual.tex` + `documentation/manual/*.tex` — the operations manual (LaTeX book, one file per chapter: preamble, titlepage, overview, installation, configuration, operation, maintenance, gcode appendix; has an index via imakeidx). Update the relevant chapter when behavior/config changes, and rebuild the PDF.
-- `documentation/TODO.md` — maintained list of remaining work; the go-to place to see what is stubbed vs. real.
-- `documentation/specifications.md`, `implementation_plan.md` — original requirements and phase plan.
-- Known duplication: `implementation_plan.md`/`walkthrough.md` exist at root and in `documentation/` (cleanup is a TODO item).
+- `docs/manual.tex` + `docs/manual/*.tex` — the operations manual (LaTeX book, one file per chapter: preamble, titlepage, overview, installation, configuration, operation, maintenance, gcode appendix; has an index via imakeidx). Update the relevant chapter when behavior/config changes, and rebuild the PDF.
+- `docs/TODO.md` — maintained list of remaining work; the go-to place to see what is stubbed vs. real.
+- `docs/specifications.md`, `implementation_plan.md` — original requirements and phase plan.
+- Known duplication: `implementation_plan.md`/`walkthrough.md` exist at root and in `docs/` (cleanup is a TODO item).

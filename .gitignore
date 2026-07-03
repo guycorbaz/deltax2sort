@@ -2,13 +2,13 @@
 /target
 
 # LaTeX build artifacts (manual.pdf itself is committed)
-documentation/*.aux
-documentation/*.fdb_latexmk
-documentation/*.fls
-documentation/*.idx
-documentation/*.ilg
-documentation/*.ind
-documentation/*.log
-documentation/*.out
-documentation/*.toc
-documentation/*.synctex.gz
+docs/*.aux
+docs/*.fdb_latexmk
+docs/*.fls
+docs/*.idx
+docs/*.ilg
+docs/*.ind
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.synctex.gz

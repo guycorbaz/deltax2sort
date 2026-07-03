@@ -17,8 +17,8 @@
     \cfg{src/app\_config.rs} & Configuration structures, loading,
       validation. \\
     \cfg{ui/app\_window.slint} & Operator interface definition. \\
-    \cfg{documentation/} & Specifications, this manual (sources under
-      \cfg{documentation/manual/}), TODO list. \\
+    \cfg{docs/} & Specifications, this manual (sources under
+      \cfg{docs/manual/}), TODO list. \\
     \bottomrule
   \end{tabularx}
   \caption{Repository layout}
@@ -41,17 +41,17 @@ serial protocol is documented in Appendix~\ref{app:gcode}.
 
 \section{Editing this manual}
 \index{manual!editing}\index{latexmk@\texttt{latexmk}}%
-The manual sources live under \cfg{documentation/manual/}, one file per
-chapter; \cfg{documentation/manual.tex} is the driver that sets the class
+The manual sources live under \cfg{docs/manual/}, one file per
+chapter; \cfg{docs/manual.tex} is the driver that sets the class
 and includes them. Build with:
 \begin{lstlisting}[language=bash]
-cd documentation && latexmk -pdf manual.tex
+cd docs && latexmk -pdf manual.tex
 \end{lstlisting}
 
 \section{Remaining work}
 \index{TODO list}\index{roadmap}%
 The authoritative, maintained list of open work items lives in
-\cfg{documentation/TODO.md}. Major open areas at the time of writing:
+\cfg{docs/TODO.md}. Major open areas at the time of writing:
 wiring the vision loop end-to-end (camera $\rightarrow$ detection
 $\rightarrow$ pick scheduling), the live camera feed and overlays in the
 UI, a real object tracker and classifier, belt-motion compensation using

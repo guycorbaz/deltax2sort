@@ -31,7 +31,7 @@ impl BrickLinkClient {
     pub fn new() -> Self {
         Self {}
     }
-    
+
     pub async fn search_part(&self, part_id: &str) -> Result<String> {
         // Mock query
         Ok(format!("Part {}: details...", part_id))

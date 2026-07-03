@@ -1,7 +1,7 @@
 pub mod calibration;
+pub mod classifier;
 pub mod detector;
 pub mod tracker;
-pub mod classifier;
 
 use crate::hardware::Position;
 use opencv::core::Rect;
@@ -19,7 +19,7 @@ pub enum ObjectClass {
 #[derive(Debug, Clone)]
 pub struct DetectedObject {
     pub id: u64,
-    pub rect: Rect,         // Bounding box in Pixel coords
+    pub rect: Rect,                  // Bounding box in Pixel coords
     pub world_pos: Option<Position>, // Center in Robot coords
     pub class: ObjectClass,
     pub confidence: f32,

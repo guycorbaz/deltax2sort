@@ -55,4 +55,4 @@ conveyor, Home queues a homing command, and EMERGENCY STOP halts the
 hardware and clears the orchestrator queue.
 
 For the full manual (installation, configuration reference, operation),
-see `documentation/manual.pdf`. Open work items: `documentation/TODO.md`.
+see `docs/manual.pdf`. Open work items: `docs/TODO.md`.

@@ -6,7 +6,7 @@ use log::{error, info, warn};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 #[derive(Debug, Clone)]
 pub enum RobotCommand {
@@ -118,7 +118,7 @@ pub struct Orchestrator {
     queue: InstructionQueue,
     paused: bool,
     // Not yet used by schedule_pick: belt-motion compensation needs robot
-    // position feedback (documentation/TODO.md).
+    // position feedback (docs/TODO.md).
     planner: TrajectoryPlanner,
     limits: WorkspaceLimits,
     z_travel: f32,
@@ -199,7 +199,10 @@ impl Orchestrator {
             OrchestratorMsg::Pick(object) => self.schedule_pick(object),
             OrchestratorMsg::Command(cmd) => self.queue.push(cmd),
             OrchestratorMsg::Pause => {
-                info!("Orchestrator: paused ({} command(s) queued)", self.queue.len());
+                info!(
+                    "Orchestrator: paused ({} command(s) queued)",
+                    self.queue.len()
+                );
                 self.paused = true;
             }
             OrchestratorMsg::Resume => {
@@ -263,7 +266,8 @@ impl Orchestrator {
         self.queue.push(RobotCommand::MoveTo(travel)); // approach from above
         self.queue.push(RobotCommand::MoveTo(pick)); // descend
         self.queue.push(RobotCommand::Gripper(true));
-        self.queue.push(RobotCommand::Wait(Duration::from_millis(150))); // let suction settle
+        self.queue
+            .push(RobotCommand::Wait(Duration::from_millis(150))); // let suction settle
         self.queue.push(RobotCommand::MoveTo(travel)); // lift
         self.queue.push(RobotCommand::MoveTo(self.drop_pos));
         self.queue.push(RobotCommand::Gripper(false));
@@ -311,17 +315,21 @@ mod tests {
         let planner = TrajectoryPlanner::new(100.0, 250.0);
         // Object already downstream of the pick line: previously abs()
         // produced a bogus positive time here.
-        assert!(planner
-            .calculate_intercept(ORIGIN, &object_at(50.0, 100.0))
-            .is_none());
+        assert!(
+            planner
+                .calculate_intercept(ORIGIN, &object_at(50.0, 100.0))
+                .is_none()
+        );
     }
 
     #[test]
     fn intercept_with_stopped_belt_is_none() {
         let planner = TrajectoryPlanner::new(0.0, 250.0);
-        assert!(planner
-            .calculate_intercept(ORIGIN, &object_at(50.0, -100.0))
-            .is_none());
+        assert!(
+            planner
+                .calculate_intercept(ORIGIN, &object_at(50.0, -100.0))
+                .is_none()
+        );
     }
 
     #[test]
@@ -333,9 +341,11 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(planner
-            .calculate_intercept(far_robot, &object_at(160.0, -10.0))
-            .is_none());
+        assert!(
+            planner
+                .calculate_intercept(far_robot, &object_at(160.0, -10.0))
+                .is_none()
+        );
     }
 
     #[test]

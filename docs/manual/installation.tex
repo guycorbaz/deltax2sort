@@ -1,5 +1,41 @@
 \chapter{Installation}
 
+\section{Prerequisites}
+\index{prerequisites}\index{Raspberry Pi}\index{touch display}\index{hardware requirements}%
+The system is designed around the following hardware and software.
+
+\subsection{Hardware}
+\begin{itemize}
+  \item \textbf{Delta X2 delta robot}, connected over USB serial.
+  \item \textbf{Conveyor belt} with a G-code speed controller, connected over
+    USB serial.
+  \item \textbf{USB camera} mounted above the belt (default capture
+    resolution $1280 \times 720$).
+  \item \textbf{Target computer: Raspberry Pi 4 or 5} running a 64-bit Linux
+    (ARM64/aarch64).
+  \item \textbf{Operator display: official Raspberry Pi 7\,'' Touch Display}
+    ($800 \times 480$, DSI, capacitive touch). The user interface is designed
+    touch-first for this resolution: finger-sized controls, no scrolling on
+    the main operator view, and the emergency-stop button always remains the
+    largest target on screen.
+\end{itemize}
+
+\subsection{Software}
+\begin{itemize}
+  \item Linux only (see \emph{Supported platform} below); no Windows or macOS
+    support is intended.
+  \item Rust toolchain $\geq$ 1.85 (the crate uses the 2024 edition).
+  \item The system packages listed in the next section (OpenCV, libclang,
+    libudev).
+\end{itemize}
+
+Development and testing do not require the robot hardware: an x86\_64 Ubuntu
+machine can run the full application with simulated hardware
+(\cfg{cargo run -{}- -{}-mock}). The production build path for the Raspberry
+Pi (cross-compilation from the development machine versus building on the Pi
+itself) is not yet fixed; until it is, the repository deliberately carries no
+deployment tooling.
+
 \section{Supported platform}
 Linux is the supported platform; Ubuntu 24.04 or newer is recommended.
 Other distributions work if the packages below are available.
