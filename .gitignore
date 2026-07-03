@@ -12,3 +12,7 @@ docs/*.log
 docs/*.out
 docs/*.toc
 docs/*.synctex.gz
+
+# Local AI tooling (BMad install + Claude Code skills)
+/.claude/
+/_bmad/
