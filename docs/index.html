@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deltax2sort — small-parts sorting with a Delta X2 robot</title>
+<meta name="description" content="A small-parts sorting system (LEGO bricks, screws, …): Delta X2 delta robot, OpenCV vision and a Rust/Slint control application on Raspberry Pi.">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg-soft: #11151f;
+    --card: #151a26;
+    --border: #232a3a;
+    --text: #e8ecf4;
+    --muted: #9aa5b8;
+    --accent: #ffb648;
+    --accent2: #ff5c5c;
+    --accent3: #4cc38a;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f8fb;
+      --bg-soft: #eef1f7;
+      --card: #ffffff;
+      --border: #dde3ee;
+      --text: #171c28;
+      --muted: #5b6577;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  .hero {
+    position: relative;
+    padding: 96px 0 72px;
+    overflow: hidden;
+    background:
+      radial-gradient(600px 300px at 15% 0%, rgba(255,182,72,.14), transparent 70%),
+      radial-gradient(500px 260px at 85% 10%, rgba(255,92,92,.12), transparent 70%),
+      radial-gradient(500px 300px at 55% 100%, rgba(76,195,138,.10), transparent 70%);
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 600; letter-spacing: .04em;
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    padding: 6px 14px; border-radius: 999px;
+    margin-bottom: 24px;
+  }
+  h1 {
+    font-size: clamp(2.4rem, 6vw, 3.6rem);
+    line-height: 1.08;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    max-width: 21ch;
+  }
+  h1 .grad {
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .tagline {
+    margin: 20px 0 36px;
+    font-size: 1.15rem;
+    color: var(--muted);
+    max-width: 58ch;
+  }
+  .cta { display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 12px 22px; border-radius: 10px;
+    font-weight: 600; font-size: 15px; text-decoration: none;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn-primary {
+    background: linear-gradient(90deg, var(--accent), #ff9f3d);
+    color: #1a1205;
+    box-shadow: 0 8px 24px rgba(255,182,72,.25);
+  }
+  .btn-ghost {
+    color: var(--text);
+    border: 1px solid var(--border);
+    background: var(--card);
+  }
+  .btn svg { width: 18px; height: 18px; fill: currentColor; }
+
+  /* Pipeline strip */
+  .pipeline {
+    margin-top: 64px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: 14px; font-weight: 600;
+  }
+  .step {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 16px;
+    display: inline-flex; align-items: center; gap: 8px;
+    white-space: nowrap;
+  }
+  .step .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .arrow { color: var(--muted); }
+
+  /* Sections */
+  section { padding: 72px 0; }
+  section.alt { background: var(--bg-soft); }
+  .kicker {
+    font-size: 13px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent);
+    margin-bottom: 10px;
+  }
+  h2 { font-size: 1.9rem; letter-spacing: -0.01em; margin-bottom: 14px; }
+  .lead { color: var(--muted); max-width: 62ch; margin-bottom: 40px; }
+
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 26px;
+  }
+  .card h3 { font-size: 1.05rem; margin: 14px 0 8px; }
+  .card p { color: var(--muted); font-size: .95rem; }
+  .icon {
+    width: 42px; height: 42px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+  }
+  .i-amber { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .i-red   { background: color-mix(in srgb, var(--accent2) 16%, transparent); }
+  .i-green { background: color-mix(in srgb, var(--accent3) 16%, transparent); }
+
+  /* Hardware table */
+  .hw { width: 100%; border-collapse: collapse; font-size: .95rem; }
+  .hw th, .hw td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+  .hw th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .hw tr:last-child th, .hw tr:last-child td { border-bottom: none; }
+  .hw a { color: var(--accent); text-decoration: none; }
+  .hw a:hover { text-decoration: underline; }
+  .table-card { overflow-x: auto; padding: 6px 0; }
+
+  /* Tech chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 18px;
+    font-size: 14px; font-weight: 600;
+  }
+  .chip small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+
+  /* Status */
+  .status { list-style: none; display: grid; gap: 12px; max-width: 640px; }
+  .status li {
+    display: flex; gap: 12px; align-items: baseline;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 18px;
+  }
+  .mark { font-weight: 700; }
+  .done .mark { color: var(--accent3); }
+  .wip .mark { color: var(--accent); }
+  .todo .mark { color: var(--muted); }
+  .status span.text { color: var(--muted); }
+  .status .done span.text, .status li.done span.text { color: var(--text); }
+
+  code {
+    font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    padding: 2px 7px; border-radius: 6px;
+  }
+  section.alt code { background: var(--bg); }
+  pre {
+    background: #0d1117; color: #e6edf3;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px; overflow-x: auto;
+    font: 13.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  pre .c { color: #8b949e; }
+  pre .g { color: #7ee787; }
+
+  footer {
+    padding: 44px 0 56px;
+    border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 14px;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="badge">🤖 Rust · OpenCV · Slint · Raspberry Pi</span>
+    <h1>Sorting small parts with a <span class="grad">delta robot</span></h1>
+    <p class="tagline">
+      deltax2sort watches a conveyor belt through a camera, spots each part —
+      LEGO bricks first, screws and other small objects next — and drives a
+      Delta X2 robot to pick it off the moving belt. A hardened Rust control
+      application with a touch-first operator interface.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/guycorbaz/deltax2sort">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        View on GitHub
+      </a>
+      <a class="btn btn-ghost" href="manual.pdf">📖 Operations manual (PDF)</a>
+    </div>
+
+    <div class="pipeline" aria-label="Processing pipeline">
+      <span class="step"><span class="dot" style="background:var(--accent)"></span>Camera</span>
+      <span class="arrow">→</span>
+      <span class="step"><span class="dot" style="background:var(--accent)"></span>Detection</span>
+      <span class="arrow">→</span>
+      <span class="step"><span class="dot" style="background:var(--accent2)"></span>Tracking</span>
+      <span class="arrow">→</span>
+      <span class="step"><span class="dot" style="background:var(--accent2)"></span>px → mm</span>
+      <span class="arrow">→</span>
+      <span class="step"><span class="dot" style="background:var(--accent3)"></span>Pick &amp; place</span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="kicker">Why it's interesting</div>
+    <h2>Hardened where it matters</h2>
+    <p class="lead">
+      Driving real motors from software means the boring parts have to be
+      bulletproof. The architecture puts safety ahead of features.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <div class="icon i-red">🛑</div>
+        <h3>Preemptive emergency stop</h3>
+        <p>The E-stop owns its own cloned serial ports and fires synchronously
+        from the UI callback — bypassing every queue, mutex and pending
+        command. Robot halt <code>M112</code>, conveyor halt <code>M5</code>.</p>
+      </div>
+      <div class="card">
+        <div class="icon i-amber">📐</div>
+        <h3>Workspace enforced in the driver</h3>
+        <p>Configuration is validated at startup and workspace limits are
+        checked inside <code>move_to</code> itself — an out-of-bounds target
+        errors before a single byte of G-code leaves the machine.</p>
+      </div>
+      <div class="card">
+        <div class="icon i-green">✅</div>
+        <h3>Motion you can trust</h3>
+        <p>Every command blocks until the robot echoes physical completion
+        (<code>FEEDBACK</code> id), with EOF detection and a hard 30-second
+        deadline. On failure the orchestrator clears its queue and pauses.</p>
+      </div>
+      <div class="card">
+        <div class="icon i-amber">👁️</div>
+        <h3>OpenCV vision</h3>
+        <p>Blob detection with configurable thresholds and an affine
+        pixel→robot calibration including rotation — always based on the
+        capture resolution the camera actually grants.</p>
+      </div>
+      <div class="card">
+        <div class="icon i-green">🧪</div>
+        <h3>Full mock mode</h3>
+        <p><code>cargo run -- --mock</code> runs the complete application with
+        simulated robot, conveyor and camera. Every hardware feature exists
+        behind traits with real and mock implementations.</p>
+      </div>
+      <div class="card">
+        <div class="icon i-red">👆</div>
+        <h3>Touch-first operator UI</h3>
+        <p>A Slint interface designed for the Raspberry Pi 7" Touch Display
+        (800×480): finger-sized controls, no scrolling, and the E-stop always
+        the largest target on screen.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="kicker">Hardware</div>
+    <h2>The bench</h2>
+    <div class="card table-card">
+      <table class="hw">
+        <tr><th>Robot</th><td><a href="https://docs.deltaxrobot.com/products/deltax2/deltax2_basic_kit/">Delta X2 basic kit</a> — G-code over USB serial, 320 mm work area</td></tr>
+        <tr><th>Conveyor</th><td>Belt with G-code speed controller, USB serial</td></tr>
+        <tr><th>Camera</th><td>USB camera above the belt — model open, all capture parameters configurable</td></tr>
+        <tr><th>Computer</th><td>Raspberry Pi 4 / 5 (ARM64 Linux); development on x86_64 with mock hardware</td></tr>
+        <tr><th>Display</th><td>Official Raspberry Pi 7" Touch Display, 800×480 DSI</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="kicker">Stack</div>
+    <h2>Boring technology, on purpose</h2>
+    <div class="chips">
+      <span class="chip">Rust <small>edition 2024</small></span>
+      <span class="chip">tokio <small>async runtime</small></span>
+      <span class="chip">OpenCV <small>vision</small></span>
+      <span class="chip">Slint <small>GUI</small></span>
+      <span class="chip">serialport <small>robot &amp; belt</small></span>
+      <span class="chip">TOML <small>validated config</small></span>
+    </div>
+    <pre style="margin-top:34px"><code><span class="c"># no hardware required:</span>
+<span class="g">$</span> cargo test            <span class="c"># unit tests: config, calibration, planner, limits</span>
+<span class="g">$</span> cargo run -- --mock   <span class="c"># full app with simulated robot / belt / camera</span></code></pre>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="kicker">Roadmap</div>
+    <h2>Where the project stands</h2>
+    <ul class="status">
+      <li class="done"><span class="mark">✓</span><span class="text">Hardware layer: robot, conveyor, E-stop, workspace safety — implemented &amp; unit-tested</span></li>
+      <li class="done"><span class="mark">✓</span><span class="text">Vision building blocks: blob detector, affine calibration with rotation</span></li>
+      <li class="wip"><span class="mark">●</span><span class="text">Wiring the vision loop: camera → detection → tracking → pick</span></li>
+      <li class="todo"><span class="mark">○</span><span class="text">Live camera feed with bounding-box overlays in the operator UI</span></li>
+      <li class="todo"><span class="mark">○</span><span class="text">Object classification: swappable ONNX model trained on a PC, deployed to the Pi — retarget to screws &amp; other parts by retraining, not recoding</span></li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/guycorbaz/deltax2sort">Source on GitHub</a> ·
+      <a href="manual.pdf">Operations manual (PDF)</a> ·
+      <a href="https://github.com/guycorbaz/deltax2sort/blob/main/docs/TODO.md">Backlog</a>
+    </p>
+    <p style="margin-top:10px">LEGO® is a trademark of the LEGO Group, which does not sponsor, authorize or endorse this project.</p>
+  </div>
+</footer>
+
+</body>
+</html>

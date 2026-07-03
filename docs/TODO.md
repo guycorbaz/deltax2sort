@@ -83,6 +83,10 @@ hardening pass (see below). Check items off and re-date when working here.
 
 ## Housekeeping
 
+- [ ] Generalize wording in the manual/specifications: the project targets
+      small-parts sorting in general (screws, nuts, …), LEGO bricks being
+      only the first use case (README and project site already updated,
+      2026-07-03).
 - [ ] Run `cargo clippy` for the first time and triage the existing warning
       stock (status unverified as of 2026-07-03; not part of the local gate —
       see `_bmad-output/project-context.md`).
