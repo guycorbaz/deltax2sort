@@ -24,12 +24,9 @@ impl CalibrationParams {
     }
 }
 
-impl Default for CalibrationParams {
-    fn default() -> Self {
-        // Matches the default camera configuration (1280x720 @ 0.5 mm/px).
-        Self::centered(1280, 720, 0.5)
-    }
-}
+// Deliberately NO `Default` impl: calibration depends on the capture
+// resolution actually in effect (`CameraDriver::resolution()`), so callers
+// must construct params explicitly — e.g. `centered(width, height, mm_per_px)`.
 
 pub struct CoordinateTransformer {
     params: CalibrationParams,
@@ -70,7 +67,7 @@ mod tests {
 
     #[test]
     fn image_center_maps_to_robot_origin() {
-        let t = CoordinateTransformer::new(CalibrationParams::default());
+        let t = CoordinateTransformer::new(CalibrationParams::centered(1280, 720, 0.5));
         let p = t.pixel_to_world(640.0, 360.0).unwrap();
         assert_close(p.x, 0.0);
         assert_close(p.y, 0.0);

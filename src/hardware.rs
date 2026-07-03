@@ -531,21 +531,29 @@ impl ConveyorController for MockConveyor {
 pub trait CameraDriver: Send + Sync {
     async fn connect(&mut self) -> Result<()>;
     async fn get_frame(&mut self) -> Result<core::Mat>;
+    /// Capture resolution actually in effect (after `connect` for the real
+    /// camera, which may pick the nearest mode it supports). Calibration
+    /// must be based on this, not on the requested configuration values.
+    fn resolution(&self) -> (u32, u32);
 }
 
 pub struct OpencvCamera {
     device_id: i32,
     width: u32,
     height: u32,
+    fps: u32,
+    fourcc: Option<String>,
     cap: Option<videoio::VideoCapture>,
 }
 
 impl OpencvCamera {
-    pub fn new(device_id: i32, width: u32, height: u32) -> Self {
+    pub fn new(device_id: i32, width: u32, height: u32, fps: u32, fourcc: Option<String>) -> Self {
         Self {
             device_id,
             width,
             height,
+            fps,
+            fourcc,
             cap: None,
         }
     }
@@ -568,11 +576,46 @@ impl CameraDriver for OpencvCamera {
             return Err(anyhow!("Failed to open camera {}", self.device_id));
         }
 
+        if let Some(fourcc) = &self.fourcc {
+            let b = fourcc.as_bytes();
+            let code = videoio::VideoWriter::fourcc(
+                b[0] as char,
+                b[1] as char,
+                b[2] as char,
+                b[3] as char,
+            )?;
+            cap.set(videoio::CAP_PROP_FOURCC, code as f64)?;
+        }
         cap.set(videoio::CAP_PROP_FRAME_WIDTH, self.width as f64)?;
         cap.set(videoio::CAP_PROP_FRAME_HEIGHT, self.height as f64)?;
+        cap.set(videoio::CAP_PROP_FPS, self.fps as f64)?;
+
+        // Cameras silently fall back to the nearest mode they support; adopt
+        // and report what is actually in effect so calibration stays honest.
+        let actual_w = cap.get(videoio::CAP_PROP_FRAME_WIDTH)? as u32;
+        let actual_h = cap.get(videoio::CAP_PROP_FRAME_HEIGHT)? as u32;
+        let actual_fps = cap.get(videoio::CAP_PROP_FPS)? as u32;
+        if actual_w != 0 && (actual_w, actual_h) != (self.width, self.height) {
+            warn!(
+                "Camera: requested {}x{} but device uses {}x{}",
+                self.width, self.height, actual_w, actual_h
+            );
+            self.width = actual_w;
+            self.height = actual_h;
+        }
+        if actual_fps != 0 && actual_fps != self.fps {
+            warn!(
+                "Camera: requested {} fps but device uses {} fps",
+                self.fps, actual_fps
+            );
+            self.fps = actual_fps;
+        }
 
         self.cap = Some(cap);
-        info!("Camera: Connected.");
+        info!(
+            "Camera: Connected ({}x{} @ {} fps).",
+            self.width, self.height, self.fps
+        );
         Ok(())
     }
 
@@ -588,32 +631,49 @@ impl CameraDriver for OpencvCamera {
             Err(anyhow!("Camera not connected"))
         }
     }
+
+    fn resolution(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
 }
 
-pub struct MockCamera;
+/// Mock camera honouring the configured resolution and frame rate, so mock
+/// runs exercise the same `[camera]` settings as the real driver.
+pub struct MockCamera {
+    width: u32,
+    height: u32,
+    fps: u32,
+}
 
 impl MockCamera {
-    pub fn new() -> Self {
-        Self
+    pub fn new(width: u32, height: u32, fps: u32) -> Self {
+        Self { width, height, fps }
     }
 }
 
 #[async_trait]
 impl CameraDriver for MockCamera {
     async fn connect(&mut self) -> Result<()> {
-        info!("MockCamera: Connected");
+        info!(
+            "MockCamera: Connected ({}x{} @ {} fps)",
+            self.width, self.height, self.fps
+        );
         Ok(())
     }
 
     async fn get_frame(&mut self) -> Result<core::Mat> {
         let frame = core::Mat::new_rows_cols_with_default(
-            720,
-            1280,
+            self.height as i32,
+            self.width as i32,
             core::CV_8UC3,
             core::Scalar::all(0.0),
         )?;
-        sleep(Duration::from_millis(33)).await;
+        sleep(Duration::from_millis(1000 / self.fps.max(1) as u64)).await;
         Ok(frame)
+    }
+
+    fn resolution(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 }
 

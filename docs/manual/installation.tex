@@ -6,11 +6,15 @@ The system is designed around the following hardware and software.
 
 \subsection{Hardware}
 \begin{itemize}
-  \item \textbf{Delta X2 delta robot}, connected over USB serial.
+  \item \textbf{Delta X2 delta robot} (basic kit,
+    \href{https://docs.deltaxrobot.com/products/deltax2/deltax2_basic_kit/}{docs.deltaxrobot.com}),
+    connected over USB serial.
   \item \textbf{Conveyor belt} with a G-code speed controller, connected over
     USB serial.
-  \item \textbf{USB camera} mounted above the belt (default capture
-    resolution $1280 \times 720$).
+  \item \textbf{USB camera} mounted above the belt. The exact model is not
+    chosen yet; all capture parameters (resolution, frame rate, pixel
+    format) are configurable in the \cfg{[camera]} section (default
+    $1280 \times 720$ @ 30\,fps).
   \item \textbf{Target computer: Raspberry Pi 4 or 5} running a 64-bit Linux
     (ARM64/aarch64).
   \item \textbf{Operator display: official Raspberry Pi 7\,'' Touch Display}

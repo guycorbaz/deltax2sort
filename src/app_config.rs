@@ -50,8 +50,17 @@ pub struct ConveyorConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CameraConfig {
     pub device_id: i32,
+    /// Requested capture resolution. The camera may pick the nearest mode it
+    /// supports; the driver logs the resolution actually in effect.
     pub width: u32,
     pub height: u32,
+    /// Requested capture frame rate.
+    #[serde(default = "default_camera_fps")]
+    pub fps: u32,
+    /// Optional pixel-format FOURCC (e.g. "MJPG"); many UVC cameras need it
+    /// to reach full frame rate at higher resolutions. None = driver default.
+    #[serde(default)]
+    pub fourcc: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -86,6 +95,9 @@ fn default_feed_rate() -> u32 {
 }
 fn default_belt_speed() -> f32 {
     100.0
+}
+fn default_camera_fps() -> u32 {
+    30
 }
 
 impl Default for SortingConfig {
@@ -149,6 +161,8 @@ impl Default for AppConfig {
                 device_id: 0,
                 width: 1280,
                 height: 720,
+                fps: default_camera_fps(),
+                fourcc: None,
             },
             sorting: SortingConfig::default(),
             vision: VisionConfig::default(),
@@ -216,6 +230,13 @@ impl AppConfig {
             self.camera.width > 0 && self.camera.height > 0,
             "camera resolution must be non-zero"
         );
+        ensure!(self.camera.fps > 0, "camera.fps must be non-zero");
+        if let Some(fourcc) = &self.camera.fourcc {
+            ensure!(
+                fourcc.len() == 4 && fourcc.is_ascii(),
+                "camera.fourcc must be a 4-character ASCII code (e.g. \"MJPG\")"
+            );
+        }
         let v = &self.vision;
         ensure!(
             (0.0..=255.0).contains(&v.threshold),
@@ -272,6 +293,8 @@ mod tests {
         assert_eq!(cfg.robot.z_min, -200.0);
         assert_eq!(cfg.robot.feed_rate, 15000);
         assert_eq!(cfg.conveyor.speed_mm_s, 100.0);
+        assert_eq!(cfg.camera.fps, 30);
+        assert_eq!(cfg.camera.fourcc, None);
         cfg.validate().unwrap();
     }
 

@@ -59,9 +59,15 @@ hardening pass (see below). Check items off and re-date when working here.
 - [ ] **Classifier**: real color/shape classification, later ONNX
       inference; per-class drop bins (spec: up to 6 categories, currently a
       single `[sorting]` drop position).
+- [ ] **Choose the physical camera** (model TBD, 2026-07-03): `[camera]`
+      is fully configurable (device_id, width/height, fps, optional
+      fourcc) and the driver adopts the mode the device actually grants —
+      re-check defaults once the model is picked.
 - [ ] **Camera calibration wizard** (spec §UI): interactive pixel↔robot
       mapping; the affine transform supports rotation but nothing measures
-      it. Calibration params are hardcoded defaults, not in Settings.toml.
+      it. Calibration params must be built from
+      `CameraDriver::resolution()` (no hardcoded default anymore); move
+      them into Settings.toml.
 - [ ] **Replace `unsafe impl Send/Sync` on `OpencvCamera`** with a
       dedicated camera thread + frame channel.
 - [ ] **Conveyor protocol verification** (spec open question): `M3 S<x>` /
@@ -69,7 +75,11 @@ hardening pass (see below). Check items off and re-date when working here.
       `default_speed` (raw S value) to mm/s.
 - [ ] **Learning interface** (plan step 20, spec §3.1): unknown-object
       popup, labeling queue, BrickLink/Rebrickable part-ID lookup
-      (`BrickLinkClient` is a stub).
+      (`BrickLinkClient` is a stub). Intended workflow (2026-07-03):
+      capture/label/train on the x86 PC (more convenient UI, more CPU),
+      then copy the resulting portable model file (e.g. ONNX) to the
+      Raspberry Pi — so the classifier must load its model from a
+      configurable path, never embed it.
 
 ## Housekeeping
 

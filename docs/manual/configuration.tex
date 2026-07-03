@@ -79,10 +79,20 @@ $[\cfg{z\_min}, \cfg{z\_max}]$; \cfg{z\_travel} must be above
     \midrule
     device\_id & 0 & OpenCV device index (\cfg{/dev/video0} $\rightarrow$ 0). \\
     width, height & 1280, 720 & Requested capture resolution. \\
+    fps & 30 & Requested capture frame rate. \\
+    fourcc & (unset) & Optional pixel-format FOURCC (e.g.\ \cfg{"MJPG"});
+      many UVC cameras need it to reach full frame rate at higher
+      resolutions. Unset keeps the driver default. \\
     \bottomrule
   \end{tabularx}
   \caption{\cfg{[camera]} keys}
 \end{table}
+
+The camera model is not fixed yet, so all capture parameters are
+configurable rather than hard-coded. The requested values are best-effort:
+the device may pick the nearest mode it supports, and the driver logs (and
+adopts) the resolution and frame rate actually in effect at connection
+time. Calibration is always based on the effective resolution.
 
 \section{Section \texttt{[sorting]}}
 \index{configuration!sorting@\texttt{[sorting]}}\index{drop bin}%
@@ -121,11 +131,13 @@ $[\cfg{z\_min}, \cfg{z\_max}]$; \cfg{z\_travel} must be above
 \section{Camera calibration}
 \index{calibration}\index{camera!calibration}\index{coordinate transform}%
 The pixel-to-robot transform is affine: scale (mm per pixel), rotation
-and offset. The built-in default assumes the camera's optical centre maps
-to the robot origin at 0.5\,mm/px for a 1280$\times$720 image. A guided
-calibration wizard is planned (see the TODO list); until it exists, the
-parameters in \cfg{src/vision/calibration.rs} must be adjusted to match
-the physical camera mounting.
+and offset. There is deliberately no built-in default: parameters are
+constructed from the capture resolution actually in effect (the helper
+\cfg{CalibrationParams::centered(width, height, mm\_per\_px)} maps the
+optical centre to the robot origin). A guided calibration wizard is
+planned (see the TODO list); until it exists, the parameters in
+\cfg{src/vision/calibration.rs} must be adjusted to match the physical
+camera mounting.
 
 \section{Complete example}
 \begin{lstlisting}[language=TOML]

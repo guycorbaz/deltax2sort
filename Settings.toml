@@ -28,9 +28,15 @@ default_speed = 1000
 speed_mm_s = 100.0
 
 [camera]
+# The camera model is not chosen yet: all capture parameters are configurable.
+# The driver logs (and adopts) the mode actually granted by the device.
 device_id = 0
 width = 1280
 height = 720
+fps = 30
+# Pixel-format FOURCC, e.g. "MJPG" — many UVC cameras need it to reach full
+# frame rate at higher resolutions. Omit to keep the driver default.
+# fourcc = "MJPG"
 
 [sorting]
 # Drop bin position (must be inside the robot workspace).

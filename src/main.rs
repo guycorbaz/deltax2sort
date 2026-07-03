@@ -96,18 +96,18 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Camera (the frame/vision loop is not wired yet; connecting here
     // validates the configuration and device availability) ---
+    let cam_cfg = &config.camera;
     let mut camera: Box<dyn CameraDriver> = if args.mock {
         info!("Using Mock Camera");
-        Box::new(MockCamera::new())
+        Box::new(MockCamera::new(cam_cfg.width, cam_cfg.height, cam_cfg.fps))
     } else {
-        info!(
-            "Connecting to real Camera (device {})",
-            config.camera.device_id
-        );
+        info!("Connecting to real Camera (device {})", cam_cfg.device_id);
         Box::new(OpencvCamera::new(
-            config.camera.device_id,
-            config.camera.width,
-            config.camera.height,
+            cam_cfg.device_id,
+            cam_cfg.width,
+            cam_cfg.height,
+            cam_cfg.fps,
+            cam_cfg.fourcc.clone(),
         ))
     };
     camera
