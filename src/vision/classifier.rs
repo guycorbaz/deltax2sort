@@ -1,3 +1,6 @@
+// Entirely stub code: classification is a later milestone (docs/TODO.md).
+#![allow(dead_code)]
+
 use super::ObjectClass;
 use anyhow::Result;
 use opencv::core::Mat;

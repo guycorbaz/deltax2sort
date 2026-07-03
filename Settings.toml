@@ -52,3 +52,7 @@ min_area = 500.0
 max_area = 10000.0
 # true: objects darker than the belt; false: lighter.
 invert = true
+# Camera scale at the belt plane, mm per pixel. Sets the pixel→robot
+# transform; measure it (e.g. a ruler on the belt) and update after any
+# camera height or resolution change.
+mm_per_px = 0.5

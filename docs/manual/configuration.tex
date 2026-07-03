@@ -123,21 +123,28 @@ time. Calibration is always based on the effective resolution.
       for a blob to count as an object. \\
     invert & true & \cfg{true}: objects darker than the belt;
       \cfg{false}: objects lighter than the belt. \\
+    mm\_per\_px & 0.5 & Camera scale at the belt plane, millimetres per
+      pixel. Sets the pixel-to-robot transform; measure it (e.g.\ with a
+      ruler on the belt) and update it after any change to the camera
+      height or capture resolution. Must be $> 0$. \\
     \bottomrule
   \end{tabularx}
   \caption{\cfg{[vision]} keys}
 \end{table}
 
 \section{Camera calibration}
+\label{sec:calibration}
 \index{calibration}\index{camera!calibration}\index{coordinate transform}%
 The pixel-to-robot transform is affine: scale (mm per pixel), rotation
-and offset. There is deliberately no built-in default: parameters are
-constructed from the capture resolution actually in effect (the helper
+and offset. There is deliberately no built-in default: at startup the
+parameters are constructed from the capture resolution actually granted
+by the camera and the configured \cfg{vision.mm\_per\_px} (the helper
 \cfg{CalibrationParams::centered(width, height, mm\_per\_px)} maps the
-optical centre to the robot origin). A guided calibration wizard is
-planned (see the TODO list); until it exists, the parameters in
-\cfg{src/vision/calibration.rs} must be adjusted to match the physical
-camera mounting.
+optical centre to the robot origin, with rotation 0, i.e.\ the camera is
+assumed to be mounted with its image y axis along the belt's $+Y$
+direction). A guided calibration wizard that also measures rotation and
+offset is planned (see the TODO list); until it exists, mount the camera
+accordingly and measure \cfg{mm\_per\_px} by hand.
 
 \section{Complete example}
 \begin{lstlisting}[language=TOML]
@@ -176,4 +183,5 @@ threshold = 60.0
 min_area = 500.0
 max_area = 10000.0
 invert = true
+mm_per_px = 0.5
 \end{lstlisting}

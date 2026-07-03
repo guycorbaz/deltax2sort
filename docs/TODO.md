@@ -1,7 +1,25 @@
 # TODO — Remaining Work
 
-Maintained list of open work items. Last updated: 2026-07-02, after the
-hardening pass (see below). Check items off and re-date when working here.
+Maintained list of open work items. Last updated: 2026-07-03, after wiring
+the vision loop (see below). Check items off and re-date when working here.
+
+## Completed 2026-07-03 — vision loop wired (for context)
+
+- Vision pipeline task (`src/vision/pipeline.rs`): owns the camera,
+  frame → detect → track → pixel-to-world → `OrchestratorMsg::Pick`;
+  OpenCV work in `spawn_blocking`, capture-error backoff, clean exit when
+  the orchestrator channel closes. Spawned from `main.rs` (mock included).
+- Real tracker: greedy nearest-neighbour matching against belt-shift
+  predicted positions (+y), miss counting/eviction, `reported` flag —
+  one physical object = exactly one `Pick`.
+- Stale-pick invalidation in the orchestrator (`PICK_TTL` 3 s on the new
+  monotonic `DetectedObject::seen_at`); picks arriving while paused are
+  dropped.
+- New config key `vision.mm_per_px` (default 0.5, validated > 0); the
+  transform is built from `CameraDriver::resolution()` +
+  `CalibrationParams::centered` at startup.
+- Crate-level `#![allow(dead_code)]` removed; remaining stubs carry
+  targeted allows.
 
 ## Completed in the 2026-07-02 hardening pass (for context)
 
@@ -26,10 +44,10 @@ hardening pass (see below). Check items off and re-date when working here.
 
 ## High priority — path to first sorted brick
 
-- [ ] **Wire the vision loop** (plan step 16): spawn a task
-      `camera.get_frame()` → `BlobDetector::detect` → `Tracker::update` →
-      `CoordinateTransformer::pixel_to_world` → `OrchestratorMsg::Pick`.
-      Everything exists as building blocks; nothing is connected.
+- [x] **Wire the vision loop** (plan step 16) — done 2026-07-03:
+      `src/vision/pipeline.rs` (`VisionPipeline` + `spawn_vision_loop`);
+      one Pick per physical object, stale/paused picks dropped by the
+      orchestrator.
 - [ ] **Live camera feed in the UI** (plan step 18): convert `cv::Mat` to
       `slint::Image`, push via `invoke_from_event_loop`; then bounding-box
       overlays (step 19, green = known, red/yellow = unknown).
@@ -49,10 +67,12 @@ hardening pass (see below). Check items off and re-date when working here.
 
 ## Medium priority
 
-- [ ] **Real tracker** (plan step 11): IOU/distance matching across frames
-      with the belt-odometry offset; `tracker.rs` currently re-IDs every
-      object on every frame. `belt_shift_y` parameter is accepted and
-      ignored.
+- [x] **Real tracker** (plan step 11) — done 2026-07-03: greedy
+      nearest-neighbour matching with belt-shift prediction (from
+      `conveyor.speed_mm_s`, not odometry yet), eviction after 5 missed
+      frames, single-report guarantee. Tuning constants
+      (`max_match_dist_px = 60`, `min_seen = 3`) are code constants in
+      `tracker.rs`/`pipeline.rs`; move to config if field tuning demands.
 - [ ] **Visual odometry** (plan step 10): `calculate_belt_offset(frame1,
       frame2)` via optical flow or template matching; also enables
       measuring the true `conveyor.speed_mm_s`.
@@ -65,9 +85,10 @@ hardening pass (see below). Check items off and re-date when working here.
       re-check defaults once the model is picked.
 - [ ] **Camera calibration wizard** (spec §UI): interactive pixel↔robot
       mapping; the affine transform supports rotation but nothing measures
-      it. Calibration params must be built from
-      `CameraDriver::resolution()` (no hardcoded default anymore); move
-      them into Settings.toml.
+      it. Since 2026-07-03 params are built at startup from
+      `CameraDriver::resolution()` + `vision.mm_per_px` (Settings.toml)
+      via `CalibrationParams::centered` (rotation 0, centre = robot
+      origin); the wizard should measure scale, rotation and offset.
 - [ ] **Replace `unsafe impl Send/Sync` on `OpencvCamera`** with a
       dedicated camera thread + frame channel.
 - [ ] **Conveyor protocol verification** (spec open question): `M3 S<x>` /

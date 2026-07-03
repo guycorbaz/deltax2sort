@@ -5,8 +5,13 @@ use anyhow::Result;
 use log::{error, info, warn};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc};
+
+/// Maximum age of a detection before its pick is discarded: after this long
+/// the belt has carried the object away from the detected position, so
+/// executing the pick would grab at empty belt.
+const PICK_TTL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 pub enum RobotCommand {
@@ -25,7 +30,11 @@ pub enum OrchestratorMsg {
     Pick(DetectedObject),
     /// Enqueue a single raw command (e.g. Home from the UI).
     Command(RobotCommand),
+    // Not sent by the UI yet (pause/resume controls are a TODO); handled
+    // and unit-tested, so the variants stay.
+    #[allow(dead_code)]
     Pause,
+    #[allow(dead_code)]
     Resume,
     /// Clear the queue and pause. The hardware halt itself is done by the
     /// caller through the `EmergencyStop` handles — this message only makes
@@ -65,6 +74,9 @@ impl InstructionQueue {
     }
 }
 
+// Not on the active path yet: interception needs robot position feedback
+// (docs/TODO.md); schedule_pick targets last-seen positions until then.
+#[allow(dead_code)]
 pub struct TrajectoryPlanner {
     robot_speed_mm_s: f32,
     /// Signed belt speed in robot coordinates: positive means objects
@@ -86,6 +98,8 @@ impl TrajectoryPlanner {
     /// Predict where the object crosses the pick line and whether the robot
     /// can be there in time. Returns None when the object is moving away
     /// from (or already past) the pick line, or is unreachable in time.
+    // Unit-tested but not called on the active path yet (see struct note).
+    #[allow(dead_code)]
     pub fn calculate_intercept(
         &self,
         robot_pos: Position,
@@ -119,6 +133,7 @@ pub struct Orchestrator {
     paused: bool,
     // Not yet used by schedule_pick: belt-motion compensation needs robot
     // position feedback (docs/TODO.md).
+    #[allow(dead_code)]
     planner: TrajectoryPlanner,
     limits: WorkspaceLimits,
     z_travel: f32,
@@ -196,7 +211,20 @@ impl Orchestrator {
 
     fn handle_message(&mut self, msg: OrchestratorMsg) {
         match msg {
-            OrchestratorMsg::Pick(object) => self.schedule_pick(object),
+            OrchestratorMsg::Pick(object) => {
+                if self.paused {
+                    // Accepting picks while paused would build a backlog of
+                    // long-gone objects that gets executed on Resume.
+                    warn!(
+                        "Orchestrator: paused — dropping pick for object {}",
+                        object.id
+                    );
+                    return;
+                }
+                // Clock read happens only here at the message boundary;
+                // schedule_pick stays pure and testable.
+                self.schedule_pick(object, Instant::now());
+            }
             OrchestratorMsg::Command(cmd) => self.queue.push(cmd),
             OrchestratorMsg::Pause => {
                 info!(
@@ -233,7 +261,20 @@ impl Orchestrator {
         }
     }
 
-    fn schedule_pick(&mut self, object: DetectedObject) {
+    /// Queue the pick-and-place sequence for `object`. `now` is passed in
+    /// (rather than read internally) so staleness is testable with explicit
+    /// instants.
+    fn schedule_pick(&mut self, object: DetectedObject, now: Instant) {
+        let age = now.saturating_duration_since(object.seen_at);
+        if age > PICK_TTL {
+            warn!(
+                "Orchestrator: dropping stale pick for object {} (seen {:.1} s ago, TTL {} s)",
+                object.id,
+                age.as_secs_f32(),
+                PICK_TTL.as_secs()
+            );
+            return;
+        }
         let Some(pos) = object.world_pos else {
             warn!(
                 "Orchestrator: object {} has no world position — skipping",
@@ -295,7 +336,15 @@ mod tests {
             class: ObjectClass::Unknown,
             confidence: 0.0,
             timestamp: SystemTime::now(),
+            seen_at: Instant::now(),
         }
+    }
+
+    fn test_orchestrator() -> Orchestrator {
+        let robot: Arc<Mutex<Box<dyn RobotController>>> =
+            Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
+        let (_tx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        orch
     }
 
     #[test]
@@ -354,6 +403,38 @@ mod tests {
         let mut obj = object_at(0.0, -100.0);
         obj.world_pos = None;
         assert!(planner.calculate_intercept(ORIGIN, &obj).is_none());
+    }
+
+    #[test]
+    fn fresh_pick_is_scheduled() {
+        let mut orch = test_orchestrator();
+        let object = object_at(50.0, 0.0);
+        // 1 s old: within PICK_TTL (explicit instants, no clock reads).
+        let now = object.seen_at + Duration::from_secs(1);
+        orch.schedule_pick(object, now);
+        assert_eq!(orch.queue.len(), 7, "full pick-and-place sequence queued");
+    }
+
+    #[test]
+    fn stale_pick_is_dropped() {
+        let mut orch = test_orchestrator();
+        let object = object_at(50.0, 0.0);
+        // 4 s old: past the 3 s PICK_TTL — the belt has moved on.
+        let now = object.seen_at + Duration::from_secs(4);
+        orch.schedule_pick(object, now);
+        assert!(orch.queue.is_empty(), "stale pick must not be queued");
+    }
+
+    #[test]
+    fn pick_while_paused_is_dropped() {
+        let mut orch = test_orchestrator();
+        orch.handle_message(OrchestratorMsg::Pause);
+        orch.handle_message(OrchestratorMsg::Pick(object_at(50.0, 0.0)));
+        assert!(orch.queue.is_empty(), "paused pick must not be queued");
+        // A fresh pick after Resume goes through.
+        orch.handle_message(OrchestratorMsg::Resume);
+        orch.handle_message(OrchestratorMsg::Pick(object_at(50.0, 0.0)));
+        assert_eq!(orch.queue.len(), 7);
     }
 
     #[test]

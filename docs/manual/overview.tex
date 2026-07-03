@@ -82,9 +82,12 @@ in three layers plus the UI:
   \item[Vision layer (\cfg{src/vision/})]
     \index{vision}\index{detection}\index{tracker}\index{classifier}%
     Blob detection (grayscale, blur, threshold, contours), pixel-to-world
-    calibration (affine transform with rotation), an object tracker and a
-    classifier. Tracker and classifier are still placeholder
-    implementations (see the project TODO list).
+    calibration (affine transform with rotation), a multi-frame object
+    tracker (nearest-neighbour matching with belt-motion prediction; each
+    physical object is reported exactly once) and a classifier. The
+    vision pipeline owns the camera and feeds pick requests to the
+    orchestrator; the classifier is still a placeholder (see the project
+    TODO list).
   \item[Orchestrator (\cfg{src/orchestrator.rs})]
     \index{orchestrator}\index{instruction queue}%
     Receives messages (pick requests, raw commands, pause/resume,

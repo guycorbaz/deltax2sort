@@ -98,6 +98,9 @@ pub trait RobotController: Send + Sync {
     async fn home(&mut self) -> Result<()>;
     async fn move_to(&mut self, pos: Position) -> Result<()>;
     async fn set_gripper(&mut self, on: bool) -> Result<()>;
+    // Programmatic halt; unused today — the UI E-stop path deliberately
+    // bypasses the traits via `estop_handle` (preemption).
+    #[allow(dead_code)]
     async fn stop(&mut self) -> Result<()>; // E-Stop
     /// Preemptive halt handle; available once connected. See [`EmergencyStop`].
     fn estop_handle(&self) -> Option<Arc<dyn EmergencyStop>>;
@@ -110,6 +113,8 @@ pub struct MockRobot {
 }
 
 impl MockRobot {
+    // Only unit tests construct it without explicit limits.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::with_limits(WorkspaceLimits::default())
     }
@@ -576,6 +581,10 @@ impl CameraDriver for OpencvCamera {
             return Err(anyhow!("Failed to open camera {}", self.device_id));
         }
 
+        // Keep the driver's internal frame queue as short as possible so
+        // get_frame returns the freshest frame, not one buffered seconds ago
+        // (best effort — not every backend honours it).
+        let _ = cap.set(videoio::CAP_PROP_BUFFERSIZE, 1.0);
         if let Some(fourcc) = &self.fourcc {
             let b = fourcc.as_bytes();
             let code = videoio::VideoWriter::fourcc(

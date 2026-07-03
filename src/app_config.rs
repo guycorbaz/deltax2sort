@@ -82,6 +82,10 @@ pub struct VisionConfig {
     /// true: objects darker than the belt (THRESH_BINARY_INV);
     /// false: objects lighter than the belt.
     pub invert: bool,
+    /// Camera scale in mm per pixel at the belt plane. Feeds the
+    /// pixel→robot transform (`CalibrationParams::centered`).
+    #[serde(default = "default_mm_per_px")]
+    pub mm_per_px: f32,
 }
 
 fn default_z_min() -> f32 {
@@ -98,6 +102,9 @@ fn default_belt_speed() -> f32 {
 }
 fn default_camera_fps() -> u32 {
     30
+}
+fn default_mm_per_px() -> f32 {
+    0.5
 }
 
 impl Default for SortingConfig {
@@ -117,6 +124,7 @@ impl Default for VisionConfig {
             min_area: 500.0,
             max_area: 10000.0,
             invert: true,
+            mm_per_px: default_mm_per_px(),
         }
     }
 }
@@ -239,6 +247,10 @@ impl AppConfig {
         }
         let v = &self.vision;
         ensure!(
+            v.mm_per_px.is_finite() && v.mm_per_px > 0.0,
+            "vision.mm_per_px must be a finite value > 0"
+        );
+        ensure!(
             (0.0..=255.0).contains(&v.threshold),
             "vision.threshold must be within 0-255"
         );
@@ -295,6 +307,7 @@ mod tests {
         assert_eq!(cfg.conveyor.speed_mm_s, 100.0);
         assert_eq!(cfg.camera.fps, 30);
         assert_eq!(cfg.camera.fourcc, None);
+        assert_eq!(cfg.vision.mm_per_px, 0.5);
         cfg.validate().unwrap();
     }
 
@@ -302,6 +315,13 @@ mod tests {
     fn validate_rejects_z_pick_outside_z_range() {
         let mut cfg = AppConfig::default();
         cfg.robot.z_pick = -250.0; // below z_min (-200): physically unreachable
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_nonpositive_mm_per_px() {
+        let mut cfg = AppConfig::default();
+        cfg.vision.mm_per_px = 0.0;
         assert!(cfg.validate().is_err());
     }
 

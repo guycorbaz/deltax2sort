@@ -1,8 +1,3 @@
-// Vision/orchestration building blocks are compiled before they are wired
-// into the main loop (phased development, see implementation_plan.md);
-// dead_code stays allowed until the vision loop lands.
-#![allow(dead_code)]
-
 mod app_config;
 mod hardware;
 mod orchestrator;
@@ -94,8 +89,7 @@ async fn main() -> anyhow::Result<()> {
     let robot_estop = robot.lock().await.estop_handle();
     let conveyor_estop = conveyor.lock().await.estop_handle();
 
-    // --- Camera (the frame/vision loop is not wired yet; connecting here
-    // validates the configuration and device availability) ---
+    // --- Camera ---
     let cam_cfg = &config.camera;
     let mut camera: Box<dyn CameraDriver> = if args.mock {
         info!("Using Mock Camera");
@@ -118,6 +112,10 @@ async fn main() -> anyhow::Result<()> {
     // --- Orchestrator ---
     let (orch_tx, orch) = Orchestrator::new(&config, robot.clone());
     tokio::spawn(orch.run());
+
+    // --- Vision loop: owns the camera, feeds pick-ready objects to the
+    // orchestrator (camera → detect → track → pixel-to-world → Pick) ---
+    vision::pipeline::spawn_vision_loop(camera, &config, orch_tx.clone());
 
     // --- UI ---
     let ui = AppWindow::new()?;
