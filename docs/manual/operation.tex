@@ -36,6 +36,13 @@ and turns detected objects into pick requests); and finally opens the
 operator UI. Any failure in this chain aborts startup with a message
 identifying the failing device.
 
+\begin{notebox}
+  The orchestrator starts \textbf{paused}: even if objects are already
+  visible to the camera, the robot will not move until the operator
+  presses \emph{Start Sorting}. The status line shows
+  \emph{Ready (paused)} in this state.
+\end{notebox}
+
 \section{Automatic sorting}
 \index{sorting}\index{vision}\index{pick}%
 While the belt runs, the vision loop detects objects, follows each one
@@ -57,12 +64,15 @@ retries every 500~ms without affecting robot control.
     \toprule
     \textbf{Control} & \textbf{Behaviour} \\
     \midrule
-    Start Sorting / Pause System & Toggles the conveyor. Starts the belt at
-      \cfg{default\_speed}; pressing again stops it. The label reflects the
-      current state. \\
-    Stop Conveyor & Stops the belt (enabled while running). \\
-    Home Robot & Queues a homing command through the orchestrator (enabled
-      while the system is not running). \\
+    Start Sorting / Pause System & Starts the belt at \cfg{default\_speed}
+      \emph{and} resumes the pick pipeline; pressing again stops the belt
+      and pauses picking. Disabled after an emergency stop until the robot
+      has been re-homed. \\
+    Stop Conveyor & Stops the belt and pauses the pick pipeline (enabled
+      while running). \\
+    Home Robot & Homes the robot with priority — it runs even while the
+      orchestrator is paused, and a successful homing is what clears the
+      E-stop lockout. Always enabled. \\
     EMERGENCY STOP & Immediately halts robot and conveyor and clears all
       queued work. See section~\ref{sec:estop}. \\
     \bottomrule
@@ -70,9 +80,11 @@ retries every 500~ms without affecting robot control.
   \caption{UI controls}
 \end{table}
 
-The dashboard shows the robot connection status, the conveyor state and
-the total number of sorted bricks. The live camera feed and detection
-overlays are not wired up yet (see the TODO list).
+The status line reflects the orchestrator's \emph{confirmed} state —
+\emph{Ready (paused)}, \emph{Sorting}, or \emph{E-STOP -- HOME REQUIRED}
+— never merely what a button press requested. The dashboard also shows
+the conveyor state and the total number of sorted parts. The live camera
+feed and detection overlays are not wired up yet (see the issue tracker).
 
 \section{Emergency stop and recovery}
 \label{sec:estop}
@@ -82,15 +94,19 @@ Pressing \textbf{EMERGENCY STOP}:
   \item writes \cfg{M112} to the robot and \cfg{M5} to the conveyor on
     dedicated serial handles, bypassing every queue and lock;
   \item clears the orchestrator's instruction queue and pauses it;
-  \item marks both devices as \cfg{E-STOP} in the UI.
+  \item locks out \emph{Start Sorting} and shows
+    \emph{E-STOP -- HOME REQUIRED} until the robot has been re-homed
+    successfully.
 \end{enumerate}
 
 To recover after an E-stop:
 \begin{enumerate}
   \item Remove the physical cause (jam, obstruction, misplaced fixture).
-  \item Restart the application. The robot controller may also need a
-    power cycle after \cfg{M112}, depending on firmware.
-  \item Home the robot before resuming production.
+  \item Press \emph{Home Robot}. A successful homing clears the lockout.
+    Note that after \cfg{M112} the robot controller may need a power
+    cycle and an application restart before it accepts commands again,
+    depending on firmware.
+  \item Press \emph{Start Sorting} to resume production.
 \end{enumerate}
 
 \begin{notebox}
@@ -104,8 +120,9 @@ To recover after an E-stop:
 \index{checklist}%
 \begin{enumerate}
   \item Check that the belt is empty and the workspace is clear.
-  \item Start the application; confirm \emph{Status: Connected}.
+  \item Start the application; confirm \emph{Status: Ready (paused)}.
   \item If not homed automatically, press \emph{Home Robot}.
-  \item Press \emph{Start Sorting}.
+  \item Press \emph{Start Sorting} — this starts the belt and enables
+    picking.
   \item Supervise the first picks; keep a hand near the E-stop.
 \end{enumerate}

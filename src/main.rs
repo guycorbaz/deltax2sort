@@ -13,7 +13,7 @@ use hardware::{
     RobotController,
 };
 use log::{error, info, warn};
-use orchestrator::{Orchestrator, OrchestratorMsg, RobotCommand};
+use orchestrator::{Orchestrator, OrchestratorMsg, OrchestratorState};
 use slint::ComponentHandle;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -109,8 +109,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("connecting to camera device {}", config.camera.device_id))?;
 
-    // --- Orchestrator ---
-    let (orch_tx, orch) = Orchestrator::new(&config, robot.clone());
+    // --- Orchestrator (starts PAUSED: no pick can move the robot before
+    // the operator presses Start) ---
+    let (orch_tx, orch_state, orch) = Orchestrator::new(&config, robot.clone());
     tokio::spawn(orch.run());
 
     // --- Vision loop: owns the camera, feeds pick-ready objects to the
@@ -119,14 +120,51 @@ async fn main() -> anyhow::Result<()> {
 
     // --- UI ---
     let ui = AppWindow::new()?;
-    ui.set_robot_status("Connected".into());
+    ui.set_robot_status("Ready (paused)".into());
     ui.set_conveyor_status("Stopped".into());
     let ui_weak = ui.as_weak();
 
-    // Start / Pause toggle: actually drives the conveyor.
+    // Mirror the orchestrator's CONFIRMED state into the UI (never what a
+    // button hoped): status text + the Start interlock after an E-stop.
+    {
+        let ui_handle = ui_weak.clone();
+        let mut orch_state = orch_state;
+        tokio::spawn(async move {
+            loop {
+                let state = *orch_state.borrow_and_update();
+                let ui_handle2 = ui_handle.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_handle2.upgrade() {
+                        match state {
+                            OrchestratorState::Paused => {
+                                ui.set_estopped(false);
+                                ui.set_robot_status("Ready (paused)".into());
+                            }
+                            OrchestratorState::Running => {
+                                ui.set_estopped(false);
+                                ui.set_robot_status("Sorting".into());
+                            }
+                            OrchestratorState::EStopped => {
+                                ui.set_estopped(true);
+                                ui.set_is_running(false);
+                                ui.set_robot_status("E-STOP — HOME REQUIRED".into());
+                            }
+                        }
+                    }
+                });
+                if orch_state.changed().await.is_err() {
+                    break; // orchestrator gone
+                }
+            }
+        });
+    }
+
+    // Start / Pause toggle: drives the conveyor AND the pick pipeline
+    // (Resume/Pause) — sorting never starts without the operator.
     {
         let ui_handle = ui_weak.clone();
         let conveyor = conveyor.clone();
+        let tx = orch_tx.clone();
         let speed = config.conveyor.default_speed as i32;
         ui.on_start_clicked(move || {
             let starting = ui_handle
@@ -134,6 +172,11 @@ async fn main() -> anyhow::Result<()> {
                 .map(|ui| !ui.get_is_running())
                 .unwrap_or(true);
             info!("UI: {} requested", if starting { "Start" } else { "Pause" });
+            let _ = tx.send(if starting {
+                OrchestratorMsg::Resume
+            } else {
+                OrchestratorMsg::Pause
+            });
             let conveyor = conveyor.clone();
             let ui_handle = ui_handle.clone();
             tokio::spawn(async move {
@@ -165,8 +208,10 @@ async fn main() -> anyhow::Result<()> {
     {
         let ui_handle = ui_weak.clone();
         let conveyor = conveyor.clone();
+        let tx = orch_tx.clone();
         ui.on_stop_clicked(move || {
             info!("UI: Stop requested");
+            let _ = tx.send(OrchestratorMsg::Pause);
             let conveyor = conveyor.clone();
             let ui_handle = ui_handle.clone();
             tokio::spawn(async move {
@@ -188,10 +233,9 @@ async fn main() -> anyhow::Result<()> {
         let tx = orch_tx.clone();
         ui.on_home_clicked(move || {
             info!("UI: Home requested");
-            if tx
-                .send(OrchestratorMsg::Command(RobotCommand::Home))
-                .is_err()
-            {
+            // Dedicated recovery message: runs even while paused and clears
+            // the E-stopped state on success.
+            if tx.send(OrchestratorMsg::Home).is_err() {
                 error!("UI: orchestrator is gone; cannot home");
             }
         });
@@ -209,11 +253,11 @@ async fn main() -> anyhow::Result<()> {
             if let Some(handle) = &conveyor_estop {
                 handle.trigger();
             }
-            // 2. Drop all queued work and pause the orchestrator.
+            // 2. Drop all queued work and pause the orchestrator; the state
+            // watcher will flip the UI to E-STOP / lock Start until re-home.
             let _ = tx.send(OrchestratorMsg::EStop);
             if let Some(ui) = ui_handle.upgrade() {
                 ui.set_is_running(false);
-                ui.set_robot_status("E-STOP".into());
                 ui.set_conveyor_status("E-STOP".into());
             }
         });

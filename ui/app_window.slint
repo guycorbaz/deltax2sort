@@ -16,6 +16,9 @@ export component AppWindow inherits Window {
     in property <string> conveyor-status: "Stopped";
     in property <int> bricks-sorted: 0;
     in property <bool> is-running: false;
+    // Safety interlock: set from the orchestrator's confirmed state after an
+    // E-stop; Start stays disabled until a successful re-home clears it.
+    in property <bool> estopped: false;
 
     callback start-clicked();
     callback stop-clicked();
@@ -38,7 +41,7 @@ export component AppWindow inherits Window {
             Rectangle { } // Spacer
             Text {
                 text: "Status: " + robot-status;
-                color: robot-status == "Connected" ? #4caf50 : #f44336;
+                color: estopped ? #f44336 : (is-running ? #4caf50 : #ffb74d);
                 vertical-alignment: center;
                 font-weight: 600;
             }
@@ -133,6 +136,8 @@ export component AppWindow inherits Window {
                     Button {
                         text: is-running ? "Pause System" : "Start Sorting";
                         primary: true;
+                        // Locked after E-stop until a successful re-home.
+                        enabled: !estopped;
                         clicked => {
                             root.start-clicked();
                         }
@@ -148,7 +153,8 @@ export component AppWindow inherits Window {
 
                     Button {
                         text: "Home Robot";
-                        enabled: !is-running;
+                        // Always available: homing is the recovery action
+                        // that clears the E-stopped state.
                         clicked => {
                             root.home-clicked();
                         }

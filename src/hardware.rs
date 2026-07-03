@@ -70,13 +70,14 @@ struct SerialEStop {
 impl EmergencyStop for SerialEStop {
     fn trigger(&self) {
         warn!("E-STOP: sending halt to {}", self.label);
-        match self.port.lock() {
-            Ok(mut p) => {
-                let _ = p.write_all(self.command);
-                let _ = p.flush();
-            }
-            Err(_) => warn!("E-STOP: {} port mutex poisoned", self.label),
-        }
+        // A poisoned mutex must NEVER prevent the halt: PoisonError still
+        // hands over the guard, so recover it and write anyway.
+        let mut p = self
+            .port
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = p.write_all(self.command);
+        let _ = p.flush();
     }
 }
 
@@ -388,9 +389,11 @@ impl RobotController for DeltaX2 {
             .or_else(|| self.port.clone())
             .ok_or_else(|| anyhow!("Robot not connected"))?;
         tokio::task::spawn_blocking(move || -> Result<()> {
+            // Same rule as the EmergencyStop handles: a poisoned mutex must
+            // never prevent the halt — recover the guard and write anyway.
             let mut p = port
                 .lock()
-                .map_err(|_| anyhow!("serial port mutex poisoned"))?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             p.write_all(b"M112\n")?;
             p.flush()?;
             Ok(())

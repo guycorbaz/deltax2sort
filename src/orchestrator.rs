@@ -6,7 +6,7 @@ use log::{error, info, warn};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 
 /// Maximum age of a detection before its pick is discarded: after this long
 /// the belt has carried the object away from the detected position, so
@@ -28,18 +28,27 @@ pub enum RobotCommand {
 pub enum OrchestratorMsg {
     /// Schedule a full pick-and-place sequence for a detected object.
     Pick(DetectedObject),
-    /// Enqueue a single raw command (e.g. Home from the UI).
-    Command(RobotCommand),
-    // Not sent by the UI yet (pause/resume controls are a TODO); handled
-    // and unit-tested, so the variants stay.
-    #[allow(dead_code)]
+    /// Recovery/operator homing: runs even while paused (it is the required
+    /// step to leave the E-stopped state) and takes priority over the queue.
+    Home,
     Pause,
-    #[allow(dead_code)]
     Resume,
     /// Clear the queue and pause. The hardware halt itself is done by the
     /// caller through the `EmergencyStop` handles — this message only makes
     /// sure no further commands are fed to the robot.
     EStop,
+}
+
+/// Confirmed orchestrator state, published over a `watch` channel so the UI
+/// shows what the system IS doing, never what a button hoped it would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrchestratorState {
+    /// Not executing picks; Resume (UI Start) will begin sorting.
+    Paused,
+    /// Executing queued commands and accepting picks.
+    Running,
+    /// E-stop happened: paused AND Resume is refused until a Home succeeds.
+    EStopped,
 }
 
 pub struct InstructionQueue {
@@ -131,6 +140,12 @@ pub struct Orchestrator {
     rx: mpsc::UnboundedReceiver<OrchestratorMsg>,
     queue: InstructionQueue,
     paused: bool,
+    /// Set by EStop; cleared only by a successful Home. While set, Resume is
+    /// refused (the operator must re-home after an emergency stop).
+    needs_home: bool,
+    /// A Home was requested (UI); executed with priority, even while paused.
+    pending_home: bool,
+    state_tx: watch::Sender<OrchestratorState>,
     // Not yet used by schedule_pick: belt-motion compensation needs robot
     // position feedback (docs/TODO.md).
     #[allow(dead_code)]
@@ -146,12 +161,22 @@ impl Orchestrator {
     pub fn new(
         config: &AppConfig,
         robot: Arc<Mutex<Box<dyn RobotController>>>,
-    ) -> (mpsc::UnboundedSender<OrchestratorMsg>, Self) {
+    ) -> (
+        mpsc::UnboundedSender<OrchestratorMsg>,
+        watch::Receiver<OrchestratorState>,
+        Self,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
+        // SAFETY-relevant default: the orchestrator starts PAUSED, so no
+        // pick can move the robot before the operator presses Start.
+        let (state_tx, state_rx) = watch::channel(OrchestratorState::Paused);
         let orchestrator = Self {
             rx,
             queue: InstructionQueue::new(),
-            paused: false,
+            paused: true,
+            needs_home: false,
+            pending_home: false,
+            state_tx,
             planner: TrajectoryPlanner::new(
                 config.conveyor.speed_mm_s,
                 // F parameter is mm/min.
@@ -167,7 +192,22 @@ impl Orchestrator {
             },
             robot,
         };
-        (tx, orchestrator)
+        (tx, state_rx, orchestrator)
+    }
+
+    fn state(&self) -> OrchestratorState {
+        if self.needs_home {
+            OrchestratorState::EStopped
+        } else if self.paused {
+            OrchestratorState::Paused
+        } else {
+            OrchestratorState::Running
+        }
+    }
+
+    /// Publish the current confirmed state to the UI watch channel.
+    fn publish_state(&self) {
+        let _ = self.state_tx.send(self.state());
     }
 
     /// Main loop. Consumes messages and executes queued commands one at a
@@ -181,6 +221,23 @@ impl Orchestrator {
             // (Pause/EStop) take effect before the next command runs.
             while let Ok(msg) = self.rx.try_recv() {
                 self.handle_message(msg);
+            }
+
+            // Operator homing runs first and even while paused: it is the
+            // recovery action that clears the E-stopped state.
+            if self.pending_home {
+                self.pending_home = false;
+                match self.execute(RobotCommand::Home).await {
+                    Ok(()) => {
+                        if self.needs_home {
+                            info!("Orchestrator: home complete — E-stop state cleared");
+                            self.needs_home = false;
+                        }
+                    }
+                    Err(e) => error!("Orchestrator: home failed: {:#}", e),
+                }
+                self.publish_state();
+                continue;
             }
 
             if self.paused || self.queue.is_empty() {
@@ -203,6 +260,7 @@ impl Orchestrator {
                     );
                     self.queue.clear();
                     self.paused = true;
+                    self.publish_state();
                 }
             }
         }
@@ -225,17 +283,28 @@ impl Orchestrator {
                 // schedule_pick stays pure and testable.
                 self.schedule_pick(object, Instant::now());
             }
-            OrchestratorMsg::Command(cmd) => self.queue.push(cmd),
+            OrchestratorMsg::Home => {
+                info!("Orchestrator: home requested");
+                self.pending_home = true;
+            }
             OrchestratorMsg::Pause => {
                 info!(
                     "Orchestrator: paused ({} command(s) queued)",
                     self.queue.len()
                 );
                 self.paused = true;
+                self.publish_state();
             }
             OrchestratorMsg::Resume => {
-                info!("Orchestrator: resumed");
-                self.paused = false;
+                if self.needs_home {
+                    // Safety interlock: after an E-stop the operator must
+                    // re-home before sorting can restart.
+                    warn!("Orchestrator: Resume refused — home required after E-stop");
+                } else {
+                    info!("Orchestrator: resumed");
+                    self.paused = false;
+                }
+                self.publish_state();
             }
             OrchestratorMsg::EStop => {
                 warn!(
@@ -244,6 +313,8 @@ impl Orchestrator {
                 );
                 self.queue.clear();
                 self.paused = true;
+                self.needs_home = true;
+                self.publish_state();
             }
         }
     }
@@ -343,7 +414,7 @@ mod tests {
     fn test_orchestrator() -> Orchestrator {
         let robot: Arc<Mutex<Box<dyn RobotController>>> =
             Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
-        let (_tx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (_tx, _state_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
         orch
     }
 
@@ -435,6 +506,49 @@ mod tests {
         orch.handle_message(OrchestratorMsg::Resume);
         orch.handle_message(OrchestratorMsg::Pick(object_at(50.0, 0.0)));
         assert_eq!(orch.queue.len(), 7);
+    }
+
+    #[test]
+    fn orchestrator_starts_paused_so_boot_picks_cannot_move_the_robot() {
+        let mut orch = test_orchestrator();
+        assert_eq!(orch.state(), OrchestratorState::Paused);
+        // A pick arriving before the operator pressed Start is dropped.
+        orch.handle_message(OrchestratorMsg::Pick(object_at(50.0, 0.0)));
+        assert!(orch.queue.is_empty(), "no motion before operator Start");
+        // Operator Start (Resume) enables picking.
+        orch.handle_message(OrchestratorMsg::Resume);
+        assert_eq!(orch.state(), OrchestratorState::Running);
+    }
+
+    #[test]
+    fn estop_refuses_resume_until_home_succeeds() {
+        let mut orch = test_orchestrator();
+        orch.handle_message(OrchestratorMsg::Resume);
+        orch.handle_message(OrchestratorMsg::EStop);
+        assert_eq!(orch.state(), OrchestratorState::EStopped);
+        // Resume is refused while re-home is pending.
+        orch.handle_message(OrchestratorMsg::Resume);
+        assert_eq!(orch.state(), OrchestratorState::EStopped);
+        assert!(orch.paused, "must stay paused after refused Resume");
+        // Home request is registered; simulate the run loop completing it.
+        orch.handle_message(OrchestratorMsg::Home);
+        assert!(orch.pending_home);
+        orch.pending_home = false;
+        orch.needs_home = false; // what the run loop does on home success
+        orch.handle_message(OrchestratorMsg::Resume);
+        assert_eq!(orch.state(), OrchestratorState::Running);
+    }
+
+    #[test]
+    fn state_watch_publishes_confirmed_transitions() {
+        let robot: Arc<Mutex<Box<dyn RobotController>>> =
+            Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
+        let (_tx, state_rx, mut orch) = Orchestrator::new(&AppConfig::default(), robot);
+        assert_eq!(*state_rx.borrow(), OrchestratorState::Paused);
+        orch.handle_message(OrchestratorMsg::Resume);
+        assert_eq!(*state_rx.borrow(), OrchestratorState::Running);
+        orch.handle_message(OrchestratorMsg::EStop);
+        assert_eq!(*state_rx.borrow(), OrchestratorState::EStopped);
     }
 
     #[test]
