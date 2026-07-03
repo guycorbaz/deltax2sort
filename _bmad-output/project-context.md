@@ -110,9 +110,9 @@ or bump a dependency unless explicitly asked.
 ### Framework-Specific Rules
 
 - **Three layers, one direction**: `main.rs` wires; the orchestrator commands the
-  robot; hardware only through the `src/hardware.rs` traits. Vision →
-  `DetectedObject` → orchestrator is the TARGET flow — the vision loop is not
-  wired yet (tracker/classifier are stubs); it is the next work item.
+  robot; hardware only through the `src/hardware.rs` traits. The vision loop
+  (`src/vision/pipeline.rs`) is wired: camera → detect → track → transform →
+  `Pick`. The classifier is still a stub.
 - **Mock parity**: every new trait method gets BOTH impls (real + mock);
   `cargo run -- --mock` must stay fully functional — no `todo!()` in mocks.
   Camera access only via `CameraDriver`: never open `opencv::videoio` directly.
@@ -193,7 +193,7 @@ or bump a dependency unless explicitly asked.
   WHY/invariants. Code and comments in English.
 - **Clippy status: unverified** (never run on this repo as of writing). NOT
   part of the gate; never claim "clippy clean". If you run it: fix only
-  warnings your diff introduced, log the pre-existing stock in `docs/TODO.md`
+  warnings your diff introduced, log the pre-existing stock in a GitHub issue
   — no mass refactor.
 
 ### Development Workflow Rules
@@ -206,8 +206,10 @@ or bump a dependency unless explicitly asked.
   (cross-compile vs build on the Pi) not yet decided: don't introduce
   x86-only assumptions, don't add deployment tooling (cross, Docker,
   packaging scripts) unprompted.
-- **`docs/TODO.md` is the living backlog**: check off and re-date items when
-  completing work; add newly discovered work there.
+- **GitHub issues are the tracker of record**
+  (https://github.com/guycorbaz/deltax2sort/issues): file new findings as
+  issues (in English) and reference/close them when completing work;
+  `docs/TODO.md` is only a pointer.
 - **The manual follows behavior**: any behavior/config change updates the
   relevant chapter in `docs/manual/*.tex` and rebuilds the PDF
   (`cd docs && latexmk -pdf manual.tex`); `manual.pdf` is committed.
