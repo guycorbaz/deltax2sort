@@ -16,6 +16,7 @@ use log::{error, info, warn};
 use orchestrator::{Orchestrator, OrchestratorMsg, OrchestratorState};
 use slint::ComponentHandle;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 #[derive(Parser, Debug)]
@@ -113,11 +114,16 @@ async fn main() -> anyhow::Result<()> {
     // --- Orchestrator (starts PAUSED: no pick can move the robot before
     // the operator presses Start) ---
     let (orch_tx, orch_state, orch_errors, orch) = Orchestrator::new(&config, robot.clone());
-    tokio::spawn(orch.run());
+    let orch_handle = tokio::spawn(orch.run());
+
+    // Shutdown signal for the vision loop (the orchestrator stops via its
+    // Shutdown message so it can park first). Held until the end of main.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // --- Vision loop: owns the camera, feeds pick-ready objects to the
     // orchestrator (camera → detect → track → pixel-to-world → Pick) ---
-    vision::pipeline::spawn_vision_loop(camera, &config, orch_tx.clone());
+    let vision_handle =
+        vision::pipeline::spawn_vision_loop(camera, &config, orch_tx.clone(), shutdown_rx);
 
     // --- UI ---
     let ui = AppWindow::new()?;
@@ -364,9 +370,36 @@ async fn main() -> anyhow::Result<()> {
     info!("UI: Running event loop...");
     ui.run()?;
 
+    // --- Graceful shutdown ---
+    // Closing the window must not leave the arm at pick height with the
+    // vacuum on and the camera still open. Order: stop the belt, release the
+    // camera, let the orchestrator finish its current command and park, then
+    // wait for both tasks so the runtime is not dropped mid-command.
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
     info!("Shutting down: stopping conveyor.");
     if let Err(e) = conveyor.lock().await.stop().await {
         warn!("Conveyor stop on shutdown failed: {:#}", e);
+    }
+    // Signal the vision loop to release the camera.
+    let _ = shutdown_tx.send(true);
+    // Ask the orchestrator to finish in flight, park, and exit. (Does not rely
+    // on all senders dropping — UI callbacks still hold clones at this point.)
+    if orch_tx.send(OrchestratorMsg::Shutdown).is_err() {
+        warn!("Orchestrator already gone at shutdown");
+    }
+    // Wait for both tasks, but never hang the exit: a wedged robot is bounded
+    // by the timeout, after which the runtime drop aborts whatever remains.
+    match tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
+        let _ = orch_handle.await;
+        let _ = vision_handle.await;
+    })
+    .await
+    {
+        Ok(()) => info!("Orchestrator and vision loop stopped cleanly."),
+        Err(_) => warn!(
+            "Shutdown timed out after {}s; exiting anyway.",
+            SHUTDOWN_TIMEOUT.as_secs()
+        ),
     }
     info!("System shut down.");
     Ok(())

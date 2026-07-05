@@ -153,3 +153,16 @@ To recover after an E-stop:
     picking.
   \item Supervise the first picks; keep a hand near the E-stop.
 \end{enumerate}
+
+\section{Shutdown}
+\index{shutdown}\index{park}%
+Closing the window shuts the system down gracefully rather than cutting
+power mid-motion: the conveyor is stopped, the vision loop releases the
+camera, and the orchestrator finishes the command in flight before parking
+the robot --- it opens the gripper (so no part is left held under vacuum)
+and raises the arm to \cfg{z\_travel} above its last position. Only then
+does the process exit. If the robot does not respond within a short
+timeout the application exits anyway, so a wedged controller can never
+hang the shutdown. When the system is stopped by an emergency stop, the
+park is skipped (the halted controller would ignore it); recover with
+\emph{Home Robot} and, if needed, \emph{Release Gripper}.

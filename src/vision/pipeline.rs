@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
 use opencv::core::Mat;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::app_config::AppConfig;
 use crate::hardware::CameraDriver;
@@ -80,12 +80,15 @@ impl VisionPipeline {
 
 /// Spawn the vision loop: the task takes ownership of the camera and feeds
 /// pick-ready objects to the orchestrator. Exits when the orchestrator
-/// channel closes. OpenCV work runs inside `spawn_blocking`; the pipeline
-/// moves in and out each iteration (`Mat` and the pipeline are `Send`).
+/// channel closes or `shutdown` flips to true (on which the camera is
+/// released as the task returns). OpenCV work runs inside `spawn_blocking`;
+/// the pipeline moves in and out each iteration (`Mat` and the pipeline are
+/// `Send`).
 pub fn spawn_vision_loop(
     mut camera: Box<dyn CameraDriver>,
     config: &AppConfig,
     tx: mpsc::UnboundedSender<OrchestratorMsg>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     let (width, height) = camera.resolution();
     let mm_per_px = config.vision.mm_per_px;
@@ -98,13 +101,27 @@ pub fn spawn_vision_loop(
         );
         let mut last_frame = Instant::now();
         loop {
-            let frame = match camera.get_frame().await {
-                Ok(frame) => frame,
-                Err(e) => {
-                    warn!("Vision: frame capture failed: {:#} — retrying", e);
-                    tokio::time::sleep(CAPTURE_RETRY_DELAY).await;
+            // Stop between frames on shutdown; returning drops (releases) the
+            // camera. `biased` so a pending shutdown always wins over a ready
+            // frame.
+            let frame = tokio::select! {
+                biased;
+                res = shutdown.changed() => {
+                    // Sender dropped (Err) also means shut down.
+                    if res.is_err() || *shutdown.borrow() {
+                        info!("Vision loop: shutdown — releasing camera");
+                        return;
+                    }
                     continue;
                 }
+                frame = camera.get_frame() => match frame {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        warn!("Vision: frame capture failed: {:#} — retrying", e);
+                        tokio::time::sleep(CAPTURE_RETRY_DELAY).await;
+                        continue;
+                    }
+                },
             };
             // Stamped right after the camera read returns — the closest to
             // the true capture instant we can measure without driver

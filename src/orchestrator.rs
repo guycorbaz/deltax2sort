@@ -41,6 +41,10 @@ pub enum OrchestratorMsg {
     /// caller through the `EmergencyStop` handles — this message only makes
     /// sure no further commands are fed to the robot.
     EStop,
+    /// Graceful shutdown: finish the command in flight, park the robot
+    /// (gripper off, raise to z_travel), then stop the loop so the task can be
+    /// awaited instead of aborted when the process exits.
+    Shutdown,
 }
 
 /// Confirmed orchestrator state, published over a `watch` channel so the UI
@@ -152,6 +156,11 @@ pub struct Orchestrator {
     /// A manual gripper toggle was requested (UI); executed best-effort, even
     /// while paused. `None` = nothing pending.
     pending_gripper: Option<bool>,
+    /// Set by `Shutdown`: the loop parks the robot and exits at the next turn.
+    shutting_down: bool,
+    /// Last position successfully commanded, so shutdown can raise straight up
+    /// to z_travel without guessing X/Y. `None` until the first move.
+    last_pos: Option<Position>,
     state_tx: watch::Sender<OrchestratorState>,
     /// Publishes a concise, operator-facing message when a hardware command
     /// fails. On a kiosk Pi with no terminal the log is invisible, so every
@@ -190,6 +199,8 @@ impl Orchestrator {
             needs_home: false,
             pending_home: false,
             pending_gripper: None,
+            shutting_down: false,
+            last_pos: None,
             state_tx,
             error_tx,
             planner: TrajectoryPlanner::new(
@@ -227,6 +238,29 @@ impl Orchestrator {
         }
     }
 
+    /// Leave the robot in a safe state before the process exits: drop any held
+    /// part and lift off the belt. Best-effort — a failure must not block the
+    /// exit. Skipped when E-stopped: after M112 the robot ignores commands
+    /// until re-homed, so the blocking waits would only delay shutdown.
+    async fn park_for_shutdown(&mut self) {
+        if self.needs_home {
+            warn!("Orchestrator: shutdown while E-stopped — robot halted, skipping park");
+            return;
+        }
+        info!("Orchestrator: parking for shutdown (gripper off, raise to z_travel)");
+        self.set_gripper_best_effort(false).await;
+        if let Some(p) = self.last_pos {
+            let park = Position {
+                x: p.x,
+                y: p.y,
+                z: self.z_travel,
+            };
+            if let Err(e) = self.robot.lock().await.move_to(park).await {
+                warn!("Orchestrator: shutdown raise to z_travel failed: {e:#}");
+            }
+        }
+    }
+
     fn state(&self) -> OrchestratorState {
         if self.needs_home {
             OrchestratorState::EStopped
@@ -253,6 +287,13 @@ impl Orchestrator {
             // (Pause/EStop) take effect before the next command runs.
             while let Ok(msg) = self.rx.try_recv() {
                 self.handle_message(msg);
+            }
+
+            // Graceful shutdown: the command in flight has already returned
+            // (execution is sequential), so park now and leave the loop.
+            if self.shutting_down {
+                self.park_for_shutdown().await;
+                break;
             }
 
             // Operator homing runs first and even while paused: it is the
@@ -359,6 +400,10 @@ impl Orchestrator {
                 }
                 self.publish_state();
             }
+            OrchestratorMsg::Shutdown => {
+                info!("Orchestrator: graceful shutdown requested");
+                self.shutting_down = true;
+            }
             OrchestratorMsg::EStop => {
                 warn!(
                     "Orchestrator: E-STOP — dropping {} queued command(s) and pausing",
@@ -386,7 +431,12 @@ impl Orchestrator {
                 tokio::time::sleep(duration).await;
                 Ok(())
             }
-            RobotCommand::MoveTo(pos) => self.robot.lock().await.move_to(pos).await,
+            RobotCommand::MoveTo(pos) => {
+                self.robot.lock().await.move_to(pos).await?;
+                // Remember where we are so shutdown can raise straight up.
+                self.last_pos = Some(pos);
+                Ok(())
+            }
             RobotCommand::Gripper(on) => self.robot.lock().await.set_gripper(on).await,
             RobotCommand::Home => self.robot.lock().await.home().await,
         }
@@ -609,6 +659,33 @@ mod tests {
         assert_eq!(*state_rx.borrow(), OrchestratorState::Running);
         orch.handle_message(OrchestratorMsg::EStop);
         assert_eq!(*state_rx.borrow(), OrchestratorState::EStopped);
+    }
+
+    #[tokio::test]
+    async fn shutdown_records_last_position_and_parks() {
+        let mut orch = test_orchestrator();
+        // A successful move records where the arm is.
+        let pos = Position {
+            x: 40.0,
+            y: 20.0,
+            z: orch.z_pick,
+        };
+        orch.execute(RobotCommand::MoveTo(pos)).await.unwrap();
+        assert_eq!(orch.last_pos, Some(pos));
+        // The message flags the loop; park raises to z_travel best-effort.
+        orch.handle_message(OrchestratorMsg::Shutdown);
+        assert!(orch.shutting_down);
+        orch.park_for_shutdown().await; // against the mock: must not panic
+    }
+
+    #[tokio::test]
+    async fn shutdown_while_estopped_skips_park() {
+        let mut orch = test_orchestrator();
+        orch.handle_message(OrchestratorMsg::EStop);
+        assert!(orch.needs_home);
+        // Post-M112 the robot would ignore commands: park must return without
+        // issuing any (best-effort, non-blocking shutdown).
+        orch.park_for_shutdown().await;
     }
 
     #[test]
