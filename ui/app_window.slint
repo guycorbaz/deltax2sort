@@ -6,9 +6,13 @@ import {
 } from "std-widgets.slint";
 
 export component AppWindow inherits Window {
-    title: "Delta X2 LEGO Sorting System";
+    title: "Delta X2 Part Sorting System";
+    // Target: the official Raspberry Pi 7" Touch Display. The whole
+    // operator view (E-stop included) must fit 800x480 with NO scrolling.
     min-width: 800px;
-    min-height: 600px;
+    min-height: 480px;
+    preferred-width: 800px;
+    preferred-height: 480px;
     background: #121212;
 
     in property <image> camera-feed: @image-url("");
@@ -26,14 +30,15 @@ export component AppWindow inherits Window {
     callback estop-clicked();
 
     VerticalBox {
-        padding: 20px;
-        spacing: 15px;
+        padding: 10px;
+        spacing: 8px;
 
-        // Header
+        // Header (kept shallow so the columns get the vertical space)
         HorizontalBox {
+            padding: 0px;
             Text {
-                text: "LEGO Sorting Terminal";
-                font-size: 24px;
+                text: "Part Sorting Terminal";
+                font-size: 20px;
                 color: #ffffff;
                 font-weight: 700;
             }
@@ -48,19 +53,22 @@ export component AppWindow inherits Window {
         }
 
         HorizontalBox {
-            spacing: 20px;
-            
+            padding: 0px;
+            spacing: 10px;
+
             // Left Column: Live Feed & Analytics
             VerticalBox {
-                spacing: 15px;
-                
-                // Camera View
+                padding: 0px;
+                spacing: 8px;
+
+                // Camera View — flexible: takes whatever height remains.
                 Rectangle {
                     background: #1e1e1e;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: #333333;
-                    min-height: 400px;
+                    min-height: 160px;
+                    vertical-stretch: 1;
                     if (camera-feed.width > 0): Image {
                         source: camera-feed;
                         width: 100%;
@@ -78,20 +86,21 @@ export component AppWindow inherits Window {
                 Rectangle {
                     background: #1e1e1e;
                     border-radius: 8px;
-                    height: 80px;
+                    height: 60px;
                     HorizontalBox {
-                        padding: 15px;
+                        padding: 8px;
                         VerticalBox {
+                            padding: 0px;
                             Text {
                                 text: "Total Sorted";
                                 color: #aaaaaa;
-                                font-size: 12px;
+                                font-size: 11px;
                             }
 
                             Text {
                                 text: bricks-sorted;
                                 color: #ffffff;
-                                font-size: 20px;
+                                font-size: 18px;
                                 font-weight: 700;
                             }
                         }
@@ -101,16 +110,17 @@ export component AppWindow inherits Window {
                             background: #333333;
                         } // Separator
                         VerticalBox {
+                            padding: 0px;
                             Text {
                                 text: "Conveyor";
                                 color: #aaaaaa;
-                                font-size: 12px;
+                                font-size: 11px;
                             }
 
                             Text {
                                 text: conveyor-status;
                                 color: #4fc3f7;
-                                font-size: 20px;
+                                font-size: 18px;
                                 font-weight: 700;
                             }
                         }
@@ -118,24 +128,26 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // Right Column: Controls
+            // Right Column: Controls. Touch-first: every target >= 48px,
+            // the E-stop is by far the largest and always visible.
             Rectangle {
-                width: 200px;
+                width: 210px;
                 background: #1e1e1e;
                 border-radius: 8px;
                 VerticalBox {
-                    spacing: 10px;
+                    spacing: 8px;
                     padding: 10px;
                     Text {
                         text: "System Controls";
                         color: #ffffff;
-                        font-size: 16px;
+                        font-size: 15px;
                         font-weight: 600;
                     }
 
                     Button {
                         text: is-running ? "Pause System" : "Start Sorting";
                         primary: true;
+                        min-height: 48px;
                         // Locked after E-stop until a successful re-home.
                         enabled: !estopped;
                         clicked => {
@@ -145,6 +157,7 @@ export component AppWindow inherits Window {
 
                     Button {
                         text: "Stop Conveyor";
+                        min-height: 48px;
                         enabled: is-running;
                         clicked => {
                             root.stop-clicked();
@@ -153,6 +166,7 @@ export component AppWindow inherits Window {
 
                     Button {
                         text: "Home Robot";
+                        min-height: 48px;
                         // Always available: homing is the recovery action
                         // that clears the E-stopped state.
                         clicked => {
@@ -162,11 +176,43 @@ export component AppWindow inherits Window {
 
                     Rectangle { } // Spacer
 
-                    Button {
-                        text: "EMERGENCY STOP";
-                        primary: true;
-                        clicked => {
-                            root.estop-clicked();
+                    // EMERGENCY STOP: custom drawn (not a std Button) so its
+                    // size and colour never depend on the widget theme. The
+                    // callback stays synchronous — no new feature may enter
+                    // this path.
+                    Rectangle {
+                        height: 96px;
+                        border-radius: 10px;
+                        background: estop-touch.pressed ? #8e0000 : #d32f2f;
+                        border-width: 3px;
+                        border-color: #ff6659;
+
+                        estop-touch := TouchArea {
+                            clicked => {
+                                root.estop-clicked();
+                            }
+                        }
+
+                        VerticalBox {
+                            padding: 4px;
+                            spacing: 0px;
+                            Text {
+                                text: "EMERGENCY";
+                                color: #ffffff;
+                                font-size: 22px;
+                                font-weight: 900;
+                                horizontal-alignment: center;
+                                vertical-alignment: bottom;
+                            }
+
+                            Text {
+                                text: "STOP";
+                                color: #ffffff;
+                                font-size: 22px;
+                                font-weight: 900;
+                                horizontal-alignment: center;
+                                vertical-alignment: top;
+                            }
                         }
                     }
                 }
