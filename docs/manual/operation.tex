@@ -49,7 +49,10 @@ identifying the failing device.
 While the belt runs, the vision loop detects objects, follows each one
 across several frames and hands the orchestrator exactly one pick request
 per object, with the position converted to robot coordinates using the
-calibration of section~\ref{sec:calibration}. Two safeguards apply on the
+calibration of section~\ref{sec:calibration}. The frame-to-frame belt
+prediction is applied only while the belt is actually running; when it is
+stopped, tracks hold their position rather than drifting, so a stationary
+part is never mistaken for a new object and re-requested. Two safeguards apply on the
 receiving side: pick requests are discarded while the orchestrator is
 paused (including after an emergency stop or a command failure), and any
 pick request older than 3~seconds is discarded as stale, since the belt

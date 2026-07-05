@@ -120,10 +120,20 @@ async fn main() -> anyhow::Result<()> {
     // Shutdown message so it can park first). Held until the end of main.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    // Actual belt run-state, mirrored to the vision loop so it only predicts
+    // belt drift while the belt is really moving (no phantom picks when
+    // stopped). Set true only after a successful conveyor start.
+    let (belt_running_tx, belt_running_rx) = tokio::sync::watch::channel(false);
+
     // --- Vision loop: owns the camera, feeds pick-ready objects to the
     // orchestrator (camera → detect → track → pixel-to-world → Pick) ---
-    let vision_handle =
-        vision::pipeline::spawn_vision_loop(camera, &config, orch_tx.clone(), shutdown_rx);
+    let vision_handle = vision::pipeline::spawn_vision_loop(
+        camera,
+        &config,
+        orch_tx.clone(),
+        shutdown_rx,
+        belt_running_rx,
+    );
 
     // --- UI ---
     let ui = AppWindow::new()?;
@@ -196,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
         let ui_handle = ui_weak.clone();
         let conveyor = conveyor.clone();
         let tx = orch_tx.clone();
+        let belt_tx = belt_running_tx.clone();
         let speed = config.conveyor.default_speed as i32;
         ui.on_start_clicked(move || {
             let ui = match ui_handle.upgrade() {
@@ -219,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
             });
             let conveyor = conveyor.clone();
             let ui_handle = ui_handle.clone();
+            let belt_tx = belt_tx.clone();
             tokio::spawn(async move {
                 let result = {
                     let mut c = conveyor.lock().await;
@@ -228,6 +240,9 @@ async fn main() -> anyhow::Result<()> {
                         c.stop().await
                     }
                 };
+                // Belt is running only after a successful start; the vision
+                // loop uses this to avoid drifting a stationary part (#28).
+                let _ = belt_tx.send(result.is_ok() && starting);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle.upgrade() {
                         ui.set_command_pending(false);
@@ -259,6 +274,7 @@ async fn main() -> anyhow::Result<()> {
         let ui_handle = ui_weak.clone();
         let conveyor = conveyor.clone();
         let tx = orch_tx.clone();
+        let belt_tx = belt_running_tx.clone();
         ui.on_stop_clicked(move || {
             let ui = match ui_handle.upgrade() {
                 Some(ui) => ui,
@@ -271,6 +287,9 @@ async fn main() -> anyhow::Result<()> {
             ui.set_command_pending(true);
             ui.set_error_text("".into());
             let _ = tx.send(OrchestratorMsg::Pause);
+            // Orchestrator is now paused; the belt is no longer treated as
+            // running so vision stops predicting drift.
+            let _ = belt_tx.send(false);
             let conveyor = conveyor.clone();
             let ui_handle = ui_handle.clone();
             tokio::spawn(async move {
@@ -344,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let tx = orch_tx.clone();
         let ui_handle = ui_weak.clone();
+        let belt_tx = belt_running_tx.clone();
         ui.on_estop_clicked(move || {
             warn!("UI: EMERGENCY STOP TRIGGERED!");
             // 1. Halt hardware immediately, bypassing queues and locks.
@@ -356,6 +376,8 @@ async fn main() -> anyhow::Result<()> {
             // 2. Drop all queued work and pause the orchestrator; the state
             // watcher will flip the UI to E-STOP / lock Start until re-home.
             let _ = tx.send(OrchestratorMsg::EStop);
+            // Belt halted: vision must not predict drift.
+            let _ = belt_tx.send(false);
             if let Some(ui) = ui_handle.upgrade() {
                 ui.set_is_running(false);
                 // Clear any in-flight command gate so Start isn't left locked

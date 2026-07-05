@@ -49,23 +49,32 @@ impl VisionPipeline {
     }
 
     /// Process one frame captured `dt` after the previous one, at
-    /// `captured_at` (monotonic). Returns the pick-ready objects (each
-    /// physical object exactly once over its lifetime) with `world_pos` set
-    /// in robot mm; z stays 0 (belt plane) — the pick height comes from
-    /// configuration, never from vision.
+    /// `captured_at` (monotonic). `belt_running` is the actual conveyor
+    /// run-state: when it is stopped the prediction shift is zero, so a
+    /// stationary part cannot drift out of its track and be re-emitted.
+    /// Returns the pick-ready objects (each physical object exactly once over
+    /// its lifetime) with `world_pos` set in robot mm; z stays 0 (belt plane)
+    /// — the pick height comes from configuration, never from vision.
     pub fn process_frame(
         &mut self,
         frame: &Mat,
         dt: Duration,
         captured_at: Instant,
+        belt_running: bool,
     ) -> Result<Vec<DetectedObject>> {
         let detections = self.detector.detect(frame, captured_at)?;
 
         // Belt motion since the last frame, in pixels. The centered
         // calibration uses rotation = 0, i.e. robot +Y is aligned with
         // pixel +y — that assumption is what lets a mm/s belt speed be
-        // converted straight to a pixel +y shift.
-        let belt_shift_px = self.belt_speed_mm_s * dt.as_secs_f32() / self.mm_per_px;
+        // converted straight to a pixel +y shift. Zero while the belt is
+        // stopped: the configured speed is a nominal value, not proof of
+        // motion (see #28; visual odometry #13 will measure it directly).
+        let belt_shift_px = if belt_running {
+            self.belt_speed_mm_s * dt.as_secs_f32() / self.mm_per_px
+        } else {
+            0.0
+        };
 
         self.tracker.update(detections, belt_shift_px);
         let mut ready = self.tracker.take_ready(MIN_SEEN_FRAMES);
@@ -89,6 +98,7 @@ pub fn spawn_vision_loop(
     config: &AppConfig,
     tx: mpsc::UnboundedSender<OrchestratorMsg>,
     mut shutdown: watch::Receiver<bool>,
+    belt_running: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     let (width, height) = camera.resolution();
     let mm_per_px = config.vision.mm_per_px;
@@ -130,8 +140,11 @@ pub fn spawn_vision_loop(
             let dt = now - last_frame;
             last_frame = now;
 
+            // Snapshot the belt run-state for this frame: no prediction drift
+            // while the belt is stopped (avoids phantom duplicate picks).
+            let running = *belt_running.borrow();
             let result = tokio::task::spawn_blocking(move || {
-                let out = pipeline.process_frame(&frame, dt, now);
+                let out = pipeline.process_frame(&frame, dt, now, running);
                 (pipeline, out)
             })
             .await
@@ -212,7 +225,11 @@ mod tests {
 
         let mut emissions = Vec::new();
         for _ in 0..10 {
-            emissions.push(pipeline.process_frame(&frame, dt, Instant::now()).unwrap());
+            emissions.push(
+                pipeline
+                    .process_frame(&frame, dt, Instant::now(), true)
+                    .unwrap(),
+            );
         }
 
         let total: usize = emissions.iter().map(Vec::len).sum();
@@ -232,10 +249,32 @@ mod tests {
         for _ in 0..5 {
             assert!(
                 pipeline
-                    .process_frame(&frame, Duration::from_millis(33), Instant::now())
+                    .process_frame(&frame, Duration::from_millis(33), Instant::now(), true)
                     .unwrap()
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn stopped_belt_does_not_re_emit_a_stationary_object() {
+        // Non-zero configured belt speed, but the belt is NOT running. A part
+        // that stays put must be picked exactly once — with drift applied it
+        // would leave its track after ~1 s and be re-emitted repeatedly (#28).
+        let mut cfg = test_config();
+        cfg.conveyor.speed_mm_s = 100.0; // nominal speed, belt stopped below
+        let mut pipeline = VisionPipeline::new(&cfg, 640, 480);
+        let frame = frame_with_white_rect(Rect::new(300, 220, 40, 40));
+        let dt = Duration::from_millis(33);
+
+        let total: usize = (0..60)
+            .map(|_| {
+                pipeline
+                    .process_frame(&frame, dt, Instant::now(), false) // belt stopped
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        assert_eq!(total, 1, "stationary part emitted once while belt stopped");
     }
 }
