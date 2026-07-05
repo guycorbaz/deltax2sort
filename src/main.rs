@@ -167,11 +167,20 @@ async fn main() -> anyhow::Result<()> {
         let tx = orch_tx.clone();
         let speed = config.conveyor.default_speed as i32;
         ui.on_start_clicked(move || {
-            let starting = ui_handle
-                .upgrade()
-                .map(|ui| !ui.get_is_running())
-                .unwrap_or(true);
+            let ui = match ui_handle.upgrade() {
+                Some(ui) => ui,
+                None => return,
+            };
+            // Debounce: ignore the tap if a conveyor command is still in flight.
+            // `starting` is read here and frozen for this command so out-of-order
+            // completions can't flip the state the wrong way.
+            if ui.get_command_pending() {
+                return;
+            }
+            let starting = !ui.get_is_running();
             info!("UI: {} requested", if starting { "Start" } else { "Pause" });
+            ui.set_command_pending(true);
+            ui.set_error_text("".into());
             let _ = tx.send(if starting {
                 OrchestratorMsg::Resume
             } else {
@@ -188,19 +197,29 @@ async fn main() -> anyhow::Result<()> {
                         c.stop().await
                     }
                 };
-                match result {
-                    Ok(()) => {
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_handle.upgrade() {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_handle.upgrade() {
+                        ui.set_command_pending(false);
+                        match result {
+                            Ok(()) => {
                                 ui.set_is_running(starting);
                                 ui.set_conveyor_status(
                                     if starting { "Running" } else { "Stopped" }.into(),
                                 );
                             }
-                        });
+                            Err(e) => {
+                                let verb = if starting { "start" } else { "stop" };
+                                error!("UI: conveyor {} failed: {:#}", verb, e);
+                                // Reconcile conservatively: the belt is in an
+                                // unknown state, so leave Stop reachable (via
+                                // error-text) instead of trusting is_running.
+                                ui.set_is_running(false);
+                                ui.set_conveyor_status("ERROR".into());
+                                ui.set_error_text(format!("Conveyor {} failed", verb).into());
+                            }
+                        }
                     }
-                    Err(e) => error!("UI: conveyor command failed: {:#}", e),
-                }
+                });
             });
         });
     }
@@ -210,19 +229,37 @@ async fn main() -> anyhow::Result<()> {
         let conveyor = conveyor.clone();
         let tx = orch_tx.clone();
         ui.on_stop_clicked(move || {
+            let ui = match ui_handle.upgrade() {
+                Some(ui) => ui,
+                None => return,
+            };
+            if ui.get_command_pending() {
+                return;
+            }
             info!("UI: Stop requested");
+            ui.set_command_pending(true);
+            ui.set_error_text("".into());
             let _ = tx.send(OrchestratorMsg::Pause);
             let conveyor = conveyor.clone();
             let ui_handle = ui_handle.clone();
             tokio::spawn(async move {
-                if let Err(e) = conveyor.lock().await.stop().await {
-                    error!("UI: conveyor stop failed: {:#}", e);
-                    return;
-                }
+                let result = conveyor.lock().await.stop().await;
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle.upgrade() {
-                        ui.set_is_running(false);
-                        ui.set_conveyor_status("Stopped".into());
+                        ui.set_command_pending(false);
+                        match result {
+                            Ok(()) => {
+                                ui.set_is_running(false);
+                                ui.set_conveyor_status("Stopped".into());
+                            }
+                            Err(e) => {
+                                error!("UI: conveyor stop failed: {:#}", e);
+                                // Keep Stop reachable (error-text) so the belt
+                                // can be forced down on a retry.
+                                ui.set_conveyor_status("ERROR".into());
+                                ui.set_error_text("Conveyor stop failed".into());
+                            }
+                        }
                     }
                 });
             });
@@ -258,6 +295,10 @@ async fn main() -> anyhow::Result<()> {
             let _ = tx.send(OrchestratorMsg::EStop);
             if let Some(ui) = ui_handle.upgrade() {
                 ui.set_is_running(false);
+                // Clear any in-flight command gate so Start isn't left locked
+                // after a successful re-home.
+                ui.set_command_pending(false);
+                ui.set_error_text("".into());
                 ui.set_conveyor_status("E-STOP".into());
             }
         });

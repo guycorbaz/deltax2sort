@@ -23,6 +23,12 @@ export component AppWindow inherits Window {
     // Safety interlock: set from the orchestrator's confirmed state after an
     // E-stop; Start stays disabled until a successful re-home clears it.
     in property <bool> estopped: false;
+    // True while a conveyor command is in flight. Debounces the Start/Pause
+    // toggle: a double-tap can't spawn a second, racing command.
+    in property <bool> command-pending: false;
+    // Last hardware error shown to the operator ("" = none). While set, Stop
+    // stays available so the belt can be forced down after a failed command.
+    in property <string> error-text: "";
 
     callback start-clicked();
     callback stop-clicked();
@@ -145,11 +151,12 @@ export component AppWindow inherits Window {
                     }
 
                     Button {
-                        text: is-running ? "Pause System" : "Start Sorting";
+                        text: command-pending ? "Working…" : (is-running ? "Pause System" : "Start Sorting");
                         primary: true;
                         min-height: 48px;
-                        // Locked after E-stop until a successful re-home.
-                        enabled: !estopped;
+                        // Locked after E-stop until a successful re-home, and
+                        // while a conveyor command is still in flight.
+                        enabled: !estopped && !command-pending;
                         clicked => {
                             root.start-clicked();
                         }
@@ -158,7 +165,9 @@ export component AppWindow inherits Window {
                     Button {
                         text: "Stop Conveyor";
                         min-height: 48px;
-                        enabled: is-running;
+                        // Available while running, or after a failed command so
+                        // the operator can force the belt down. Never mid-flight.
+                        enabled: !command-pending && (is-running || error-text != "");
                         clicked => {
                             root.stop-clicked();
                         }
@@ -172,6 +181,14 @@ export component AppWindow inherits Window {
                         clicked => {
                             root.home-clicked();
                         }
+                    }
+
+                    if (error-text != ""): Text {
+                        text: error-text;
+                        color: #f44336;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
                     }
 
                     Rectangle { } // Spacer
