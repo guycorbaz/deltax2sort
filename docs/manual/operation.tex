@@ -86,6 +86,16 @@ The status line reflects the orchestrator's \emph{confirmed} state —
 the conveyor state and the total number of sorted parts. The live camera
 feed and detection overlays are not wired up yet (see the issue tracker).
 
+When a hardware command fails --- a conveyor start/stop, a robot move, or
+a homing --- a red banner appears in the controls column with a short
+description, because the log is not visible on a kiosk-style touch panel.
+The banner stays until the operator takes an action (Start, Stop or Home),
+which clears it. While a conveyor command is in flight the Start/Pause
+button is briefly disabled (shows \emph{Working\ldots}) so a double tap
+cannot launch a second, racing command; if the command fails the conveyor
+status shows \emph{ERROR} and \emph{Stop Conveyor} stays available so the
+belt can be forced down.
+
 \section{Emergency stop and recovery}
 \label{sec:estop}
 \index{emergency stop}\index{recovery}\index{M112@\texttt{M112}}%

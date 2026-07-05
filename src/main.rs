@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Orchestrator (starts PAUSED: no pick can move the robot before
     // the operator presses Start) ---
-    let (orch_tx, orch_state, orch) = Orchestrator::new(&config, robot.clone());
+    let (orch_tx, orch_state, orch_errors, orch) = Orchestrator::new(&config, robot.clone());
     tokio::spawn(orch.run());
 
     // --- Vision loop: owns the camera, feeds pick-ready objects to the
@@ -153,6 +153,30 @@ async fn main() -> anyhow::Result<()> {
                     }
                 });
                 if orch_state.changed().await.is_err() {
+                    break; // orchestrator gone
+                }
+            }
+        });
+    }
+
+    // Surface orchestrator hardware failures (robot command / home) in the
+    // operator banner — the log is invisible on a kiosk Pi. Only failures are
+    // published, so this never clears an error the UI itself set.
+    {
+        let ui_handle = ui_weak.clone();
+        let mut error_rx = orch_errors;
+        tokio::spawn(async move {
+            loop {
+                let msg = error_rx.borrow_and_update().clone();
+                if let Some(text) = msg {
+                    let ui_handle2 = ui_handle.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_handle2.upgrade() {
+                            ui.set_error_text(text.into());
+                        }
+                    });
+                }
+                if error_rx.changed().await.is_err() {
                     break; // orchestrator gone
                 }
             }
@@ -268,12 +292,20 @@ async fn main() -> anyhow::Result<()> {
 
     {
         let tx = orch_tx.clone();
+        let ui_handle = ui_weak.clone();
         ui.on_home_clicked(move || {
             info!("UI: Home requested");
+            // Clear any stale banner: the operator is taking a recovery action.
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.set_error_text("".into());
+            }
             // Dedicated recovery message: runs even while paused and clears
             // the E-stopped state on success.
             if tx.send(OrchestratorMsg::Home).is_err() {
                 error!("UI: orchestrator is gone; cannot home");
+                if let Some(ui) = ui_handle.upgrade() {
+                    ui.set_error_text("Cannot home: controller is gone".into());
+                }
             }
         });
     }

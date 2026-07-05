@@ -146,6 +146,10 @@ pub struct Orchestrator {
     /// A Home was requested (UI); executed with priority, even while paused.
     pending_home: bool,
     state_tx: watch::Sender<OrchestratorState>,
+    /// Publishes a concise, operator-facing message when a hardware command
+    /// fails. On a kiosk Pi with no terminal the log is invisible, so every
+    /// failure that pauses sorting must also reach the UI banner.
+    error_tx: watch::Sender<Option<String>>,
     // Not yet used by schedule_pick: belt-motion compensation needs robot
     // position feedback (docs/TODO.md).
     #[allow(dead_code)]
@@ -164,12 +168,14 @@ impl Orchestrator {
     ) -> (
         mpsc::UnboundedSender<OrchestratorMsg>,
         watch::Receiver<OrchestratorState>,
+        watch::Receiver<Option<String>>,
         Self,
     ) {
         let (tx, rx) = mpsc::unbounded_channel();
         // SAFETY-relevant default: the orchestrator starts PAUSED, so no
         // pick can move the robot before the operator presses Start.
         let (state_tx, state_rx) = watch::channel(OrchestratorState::Paused);
+        let (error_tx, error_rx) = watch::channel(None);
         let orchestrator = Self {
             rx,
             queue: InstructionQueue::new(),
@@ -177,6 +183,7 @@ impl Orchestrator {
             needs_home: false,
             pending_home: false,
             state_tx,
+            error_tx,
             planner: TrajectoryPlanner::new(
                 config.conveyor.speed_mm_s,
                 // F parameter is mm/min.
@@ -192,7 +199,13 @@ impl Orchestrator {
             },
             robot,
         };
-        (tx, state_rx, orchestrator)
+        (tx, state_rx, error_rx, orchestrator)
+    }
+
+    /// Push a concise failure message to the operator banner. The detailed
+    /// chain still goes to the log; this is the one line the operator sees.
+    fn report_error(&self, msg: String) {
+        let _ = self.error_tx.send(Some(msg));
     }
 
     fn state(&self) -> OrchestratorState {
@@ -234,7 +247,10 @@ impl Orchestrator {
                             self.needs_home = false;
                         }
                     }
-                    Err(e) => error!("Orchestrator: home failed: {:#}", e),
+                    Err(e) => {
+                        error!("Orchestrator: home failed: {:#}", e);
+                        self.report_error(format!("Home failed: {e:#}"));
+                    }
                 }
                 self.publish_state();
                 continue;
@@ -258,6 +274,7 @@ impl Orchestrator {
                          send Resume to continue.",
                         e
                     );
+                    self.report_error(format!("Robot command failed: {e:#}. Sorting paused."));
                     self.queue.clear();
                     self.paused = true;
                     self.publish_state();
@@ -414,7 +431,7 @@ mod tests {
     fn test_orchestrator() -> Orchestrator {
         let robot: Arc<Mutex<Box<dyn RobotController>>> =
             Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
-        let (_tx, _state_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (_tx, _state_rx, _error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
         orch
     }
 
@@ -543,12 +560,26 @@ mod tests {
     fn state_watch_publishes_confirmed_transitions() {
         let robot: Arc<Mutex<Box<dyn RobotController>>> =
             Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
-        let (_tx, state_rx, mut orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (_tx, state_rx, _error_rx, mut orch) = Orchestrator::new(&AppConfig::default(), robot);
         assert_eq!(*state_rx.borrow(), OrchestratorState::Paused);
         orch.handle_message(OrchestratorMsg::Resume);
         assert_eq!(*state_rx.borrow(), OrchestratorState::Running);
         orch.handle_message(OrchestratorMsg::EStop);
         assert_eq!(*state_rx.borrow(), OrchestratorState::EStopped);
+    }
+
+    #[test]
+    fn report_error_reaches_the_operator_banner_channel() {
+        let robot: Arc<Mutex<Box<dyn RobotController>>> =
+            Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
+        let (_tx, _state_rx, error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        // Starts empty so a fresh boot shows no banner.
+        assert!(error_rx.borrow().is_none());
+        orch.report_error("Robot command failed: boom. Sorting paused.".to_string());
+        assert_eq!(
+            error_rx.borrow().as_deref(),
+            Some("Robot command failed: boom. Sorting paused.")
+        );
     }
 
     #[test]
