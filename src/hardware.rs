@@ -199,6 +199,8 @@ pub struct DeltaX2 {
     /// Second OS handle to the same device (`try_clone`), used only for
     /// emergency stop so it can be written while `port` is busy.
     estop_port: Option<SharedPort>,
+    /// When true the E-stop halt opens the gripper (M05) just before M112.
+    release_gripper_on_estop: bool,
 }
 
 impl DeltaX2 {
@@ -206,7 +208,13 @@ impl DeltaX2 {
     /// physical move) may take before we give up waiting for its FEEDBACK.
     const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
-    pub fn new(port_name: &str, baud_rate: u32, limits: WorkspaceLimits, feed_rate: u32) -> Self {
+    pub fn new(
+        port_name: &str,
+        baud_rate: u32,
+        limits: WorkspaceLimits,
+        feed_rate: u32,
+        release_gripper_on_estop: bool,
+    ) -> Self {
         Self {
             port_name: port_name.to_string(),
             baud_rate,
@@ -215,6 +223,7 @@ impl DeltaX2 {
             cmd_seq: 0,
             port: None,
             estop_port: None,
+            release_gripper_on_estop,
         }
     }
 
@@ -411,10 +420,18 @@ impl RobotController for DeltaX2 {
     }
 
     fn estop_handle(&self) -> Option<Arc<dyn EmergencyStop>> {
+        // M112 is always the halt. When configured, prepend M05 so the gripper
+        // opens as part of the same fire-and-forget write, before the halt —
+        // after M112 the firmware would ignore it. Both variants are 'static.
+        let (command, label): (&'static [u8], &'static str) = if self.release_gripper_on_estop {
+            (b"M05\nM112\n", "robot (M05+M112)")
+        } else {
+            (b"M112\n", "robot (M112)")
+        };
         Some(Arc::new(SerialEStop {
             port: self.estop_port.clone()?,
-            command: b"M112\n",
-            label: "robot (M112)",
+            command,
+            label,
         }))
     }
 }
@@ -738,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn deltax2_validates_bounds_before_port_access() {
         // No hardware: bounds are checked before the connection state.
-        let mut robot = DeltaX2::new("/dev/null", 115200, WorkspaceLimits::default(), 15000);
+        let mut robot = DeltaX2::new("/dev/null", 115200, WorkspaceLimits::default(), 15000, false);
         let result = robot
             .move_to(Position {
                 x: 0.0,

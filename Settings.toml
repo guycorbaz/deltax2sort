@@ -18,6 +18,10 @@ z_pick = -180.0
 z_travel = -150.0
 # G-code feed rate in mm/min (F parameter of G01).
 feed_rate = 15000
+# Open the gripper (M05) on emergency stop, just before M112. Default false so
+# a held part is not dropped at an arbitrary position; set true only for cells
+# where releasing on E-stop is the safe, desired behaviour.
+release_gripper_on_estop = false
 
 [conveyor]
 port_name = "/dev/ttyUSB1"

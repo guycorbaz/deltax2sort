@@ -32,6 +32,10 @@ created on first start.
     z\_pick & $-180$ & Z height at which bricks are picked (belt surface). \\
     z\_travel & $-50$ & Safe Z height for horizontal travel. \\
     feed\_rate & 15000 & G-code feed rate in mm/min (\cfg{F} parameter). \\
+    release\_gripper\_on\_estop & false & Open the gripper (\cfg{M05}) just
+      before \cfg{M112} on emergency stop. Leave false to keep a held part
+      instead of dropping it at an arbitrary position; enable only where
+      dropping on E-stop is safe. \\
     \bottomrule
   \end{tabularx}
   \caption{\cfg{[robot]} keys}
@@ -161,6 +165,7 @@ z_max = 0.0
 z_pick = -180.0
 z_travel = -150.0
 feed_rate = 15000
+release_gripper_on_estop = false
 
 [conveyor]
 port_name = "/dev/ttyUSB1"

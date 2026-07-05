@@ -105,8 +105,10 @@ belt can be forced down.
 \index{emergency stop}\index{recovery}\index{M112@\texttt{M112}}%
 Pressing \textbf{EMERGENCY STOP}:
 \begin{enumerate}
-  \item writes \cfg{M112} to the robot and \cfg{M5} to the conveyor on
-    dedicated serial handles, bypassing every queue and lock;
+  \item writes \cfg{M112} to the robot (optionally preceded by \cfg{M05} to
+    open the gripper --- see \cfg{release\_gripper\_on\_estop}) and \cfg{M5}
+    to the conveyor on dedicated serial handles, bypassing every queue and
+    lock;
   \item clears the orchestrator's instruction queue and pauses it;
   \item locks out \emph{Start Sorting} and shows
     \emph{E-STOP -- HOME REQUIRED} until the robot has been re-homed
@@ -121,11 +123,14 @@ To recover after an E-stop:
     cycle and an application restart before it accepts commands again,
     depending on firmware.
   \item If a part is still held by the gripper, press \emph{Release
-    Gripper}. The gripper is \emph{not} released automatically on E-stop:
-    right after \cfg{M112} the halted controller would not acknowledge the
-    command and the wait would stall recovery, so releasing is left to this
-    manual step once the robot is responsive again (typically after
-    re-homing).
+    Gripper}. By default the gripper is \emph{not} released automatically on
+    E-stop, so parts are not dropped at an arbitrary position; releasing is
+    left to this manual step once the robot is responsive again (typically
+    after re-homing). A held part cannot be dropped by a blocking command
+    right after \cfg{M112} anyway --- the halted controller would not
+    acknowledge it. Cells that \emph{do} want the gripper to open on E-stop
+    can set \cfg{release\_gripper\_on\_estop = true}, which prepends
+    \cfg{M05} to the halt so it opens as part of the same preemptive write.
   \item Press \emph{Start Sorting} to resume production.
 \end{enumerate}
 

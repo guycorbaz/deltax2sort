@@ -33,6 +33,12 @@ pub struct RobotConfig {
     /// G-code feed rate in mm/min (F parameter of G01).
     #[serde(default = "default_feed_rate")]
     pub feed_rate: u32,
+    /// Whether an emergency stop should open the gripper (M05 sent just before
+    /// M112 on the E-stop halt sequence). Default false: a held part stays
+    /// held, so parts are not dropped at an arbitrary position. Set true only
+    /// for cells where dropping on E-stop is the safe, desired behaviour.
+    #[serde(default)]
+    pub release_gripper_on_estop: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -158,6 +164,7 @@ impl Default for AppConfig {
                 z_pick: -180.0,
                 z_travel: -50.0,
                 feed_rate: default_feed_rate(),
+                release_gripper_on_estop: false,
             },
             conveyor: ConveyorConfig {
                 port_name: "/dev/ttyUSB1".to_string(),
@@ -304,6 +311,8 @@ mod tests {
         let cfg: AppConfig = toml::from_str(legacy).unwrap();
         assert_eq!(cfg.robot.z_min, -200.0);
         assert_eq!(cfg.robot.feed_rate, 15000);
+        // Safety-relevant default: E-stop keeps the part held unless opted in.
+        assert!(!cfg.robot.release_gripper_on_estop);
         assert_eq!(cfg.conveyor.speed_mm_s, 100.0);
         assert_eq!(cfg.camera.fps, 30);
         assert_eq!(cfg.camera.fourcc, None);

@@ -364,11 +364,13 @@ impl Orchestrator {
                     "Orchestrator: E-STOP — dropping {} queued command(s) and pausing",
                     self.queue.len()
                 );
-                // A held part is NOT auto-released here: M112 has already gone
-                // to the robot preemptively, so a blocking M05 would likely
-                // wait out the full 30 s feedback deadline and stall the Home
-                // recovery. The operator releases it via the manual gripper
-                // toggle after re-homing.
+                // No blocking gripper release here: M112 has already gone to
+                // the robot preemptively, so a blocking M05 would likely wait
+                // out the full 30 s feedback deadline and stall Home recovery.
+                // If a cell wants the gripper to open on E-stop it does so at
+                // the hardware halt (release_gripper_on_estop prepends M05 to
+                // the M112 write); otherwise the operator uses the manual
+                // gripper toggle after re-homing.
                 self.queue.clear();
                 self.paused = true;
                 self.needs_home = true;

@@ -33,8 +33,10 @@ safety-critical (unit test + human review required).
 3. **The E-stop path stays preemptive**: `EmergencyStop` owns *cloned* serial
    ports (`try_clone`) and fires synchronously from the UI callback, bypassing
    the tokio mutexes and the orchestrator queue (robot halt `M112`, conveyor
-   halt `M5`). Never route it through channels, mutexes or async — that loses
-   preemption.
+   halt `M5`; when `robot.release_gripper_on_estop` is set the robot write is
+   `M05\nM112`, opening the gripper as part of the same preemptive write).
+   Never route it through channels, mutexes or async, and never do a blocking
+   `set_gripper` after `M112` — both lose preemption / stall recovery.
 4. **Workspace limits are enforced inside `move_to` of BOTH robot drivers**
    (real and mock): an out-of-bounds target errors before any G-code is sent.
    Every new motion path goes through `move_to`.

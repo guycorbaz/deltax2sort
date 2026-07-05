@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
                 config.robot.baud_rate,
                 limits,
                 config.robot.feed_rate,
+                config.robot.release_gripper_on_estop,
             )))),
             Arc::new(Mutex::new(Box::new(hardware::SerialConveyor::new(
                 &config.conveyor.port_name,
