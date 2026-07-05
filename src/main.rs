@@ -310,6 +310,30 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Manual gripper toggle: a recovery action so a part held after a failed
+    // pick or an E-stop can be released by hand. Routed through the
+    // orchestrator so all robot I/O stays single-owner; state is optimistic.
+    {
+        let tx = orch_tx.clone();
+        let ui_handle = ui_weak.clone();
+        ui.on_gripper_toggle(move |on| {
+            info!("UI: gripper {} requested", if on { "engage" } else { "release" });
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.set_error_text("".into());
+            }
+            if tx.send(OrchestratorMsg::SetGripper(on)).is_err() {
+                error!("UI: orchestrator is gone; cannot toggle gripper");
+                if let Some(ui) = ui_handle.upgrade() {
+                    ui.set_error_text("Cannot toggle gripper: controller is gone".into());
+                }
+                return;
+            }
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.set_gripper_on(on);
+            }
+        });
+    }
+
     {
         let tx = orch_tx.clone();
         let ui_handle = ui_weak.clone();

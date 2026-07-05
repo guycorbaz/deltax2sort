@@ -29,11 +29,16 @@ export component AppWindow inherits Window {
     // Last hardware error shown to the operator ("" = none). While set, Stop
     // stays available so the belt can be forced down after a failed command.
     in property <string> error-text: "";
+    // Manual gripper state (operator toggle). Set optimistically on click;
+    // failures surface through error-text.
+    in property <bool> gripper-on: false;
 
     callback start-clicked();
     callback stop-clicked();
     callback home-clicked();
     callback estop-clicked();
+    // Operator gripper toggle; argument is the requested new state.
+    callback gripper-toggle(bool);
 
     VerticalBox {
         padding: 10px;
@@ -180,6 +185,17 @@ export component AppWindow inherits Window {
                         // that clears the E-stopped state.
                         clicked => {
                             root.home-clicked();
+                        }
+                    }
+
+                    Button {
+                        text: gripper-on ? "Release Gripper" : "Engage Gripper";
+                        min-height: 48px;
+                        // Manual recovery/maintenance action; disabled while
+                        // sorting so it can't disturb an active pick sequence.
+                        enabled: !is-running;
+                        clicked => {
+                            root.gripper-toggle(!gripper-on);
                         }
                     }
 

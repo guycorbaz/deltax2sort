@@ -31,6 +31,10 @@ pub enum OrchestratorMsg {
     /// Recovery/operator homing: runs even while paused (it is the required
     /// step to leave the E-stopped state) and takes priority over the queue.
     Home,
+    /// Operator gripper toggle. Runs even while paused so a part held after a
+    /// failed pick or an E-stop can be released by hand. Best-effort, not part
+    /// of a pick sequence.
+    SetGripper(bool),
     Pause,
     Resume,
     /// Clear the queue and pause. The hardware halt itself is done by the
@@ -145,6 +149,9 @@ pub struct Orchestrator {
     needs_home: bool,
     /// A Home was requested (UI); executed with priority, even while paused.
     pending_home: bool,
+    /// A manual gripper toggle was requested (UI); executed best-effort, even
+    /// while paused. `None` = nothing pending.
+    pending_gripper: Option<bool>,
     state_tx: watch::Sender<OrchestratorState>,
     /// Publishes a concise, operator-facing message when a hardware command
     /// fails. On a kiosk Pi with no terminal the log is invisible, so every
@@ -182,6 +189,7 @@ impl Orchestrator {
             paused: true,
             needs_home: false,
             pending_home: false,
+            pending_gripper: None,
             state_tx,
             error_tx,
             planner: TrajectoryPlanner::new(
@@ -206,6 +214,17 @@ impl Orchestrator {
     /// chain still goes to the log; this is the one line the operator sees.
     fn report_error(&self, msg: String) {
         let _ = self.error_tx.send(Some(msg));
+    }
+
+    /// Actuate the gripper without letting a failure abort the caller. Used
+    /// for recovery (release a held part) and for the manual toggle: opening
+    /// the gripper is not motion, so it stays within the no-auto-retry rule.
+    async fn set_gripper_best_effort(&self, on: bool) {
+        let verb = if on { "engage" } else { "release" };
+        if let Err(e) = self.robot.lock().await.set_gripper(on).await {
+            error!("Orchestrator: gripper {verb} failed: {e:#}");
+            self.report_error(format!("Gripper {verb} failed: {e:#}"));
+        }
     }
 
     fn state(&self) -> OrchestratorState {
@@ -256,6 +275,14 @@ impl Orchestrator {
                 continue;
             }
 
+            // Manual gripper toggle: runs even while paused so a held part can
+            // be released by hand (e.g. after re-homing out of an E-stop).
+            if let Some(on) = self.pending_gripper.take() {
+                info!("Orchestrator: manual gripper {}", if on { "ON" } else { "OFF" });
+                self.set_gripper_best_effort(on).await;
+                continue;
+            }
+
             if self.paused || self.queue.is_empty() {
                 // Nothing to execute: block until the next message.
                 match self.rx.recv().await {
@@ -277,6 +304,11 @@ impl Orchestrator {
                     self.report_error(format!("Robot command failed: {e:#}. Sorting paused."));
                     self.queue.clear();
                     self.paused = true;
+                    // The pending Gripper(false) was just discarded with the
+                    // queue: release best-effort so suction can't hold a part
+                    // indefinitely. The robot answered until now, so this is
+                    // not the post-M112 case that could stall.
+                    self.set_gripper_best_effort(false).await;
                     self.publish_state();
                 }
             }
@@ -304,6 +336,10 @@ impl Orchestrator {
                 info!("Orchestrator: home requested");
                 self.pending_home = true;
             }
+            OrchestratorMsg::SetGripper(on) => {
+                info!("Orchestrator: manual gripper {} requested", if on { "ON" } else { "OFF" });
+                self.pending_gripper = Some(on);
+            }
             OrchestratorMsg::Pause => {
                 info!(
                     "Orchestrator: paused ({} command(s) queued)",
@@ -328,6 +364,11 @@ impl Orchestrator {
                     "Orchestrator: E-STOP — dropping {} queued command(s) and pausing",
                     self.queue.len()
                 );
+                // A held part is NOT auto-released here: M112 has already gone
+                // to the robot preemptively, so a blocking M05 would likely
+                // wait out the full 30 s feedback deadline and stall the Home
+                // recovery. The operator releases it via the manual gripper
+                // toggle after re-homing.
                 self.queue.clear();
                 self.paused = true;
                 self.needs_home = true;
@@ -566,6 +607,18 @@ mod tests {
         assert_eq!(*state_rx.borrow(), OrchestratorState::Running);
         orch.handle_message(OrchestratorMsg::EStop);
         assert_eq!(*state_rx.borrow(), OrchestratorState::EStopped);
+    }
+
+    #[test]
+    fn manual_gripper_toggle_is_registered_even_while_paused() {
+        let mut orch = test_orchestrator();
+        assert!(orch.pending_gripper.is_none());
+        // Paused (default) must not block the recovery toggle.
+        orch.handle_message(OrchestratorMsg::SetGripper(false));
+        assert_eq!(orch.pending_gripper, Some(false));
+        // A later request overrides the pending one.
+        orch.handle_message(OrchestratorMsg::SetGripper(true));
+        assert_eq!(orch.pending_gripper, Some(true));
     }
 
     #[test]

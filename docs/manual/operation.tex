@@ -73,6 +73,10 @@ retries every 500~ms without affecting robot control.
     Home Robot & Homes the robot with priority — it runs even while the
       orchestrator is paused, and a successful homing is what clears the
       E-stop lockout. Always enabled. \\
+    Engage / Release Gripper & Manually opens or closes the gripper. A
+      recovery/maintenance action --- runs even while paused so a part held
+      after a failed pick or an emergency stop can be released by hand ---
+      and is disabled while sorting so it cannot disturb an active pick. \\
     EMERGENCY STOP & Immediately halts robot and conveyor and clears all
       queued work. See section~\ref{sec:estop}. \\
     \bottomrule
@@ -116,6 +120,12 @@ To recover after an E-stop:
     Note that after \cfg{M112} the robot controller may need a power
     cycle and an application restart before it accepts commands again,
     depending on firmware.
+  \item If a part is still held by the gripper, press \emph{Release
+    Gripper}. The gripper is \emph{not} released automatically on E-stop:
+    right after \cfg{M112} the halted controller would not acknowledge the
+    command and the wait would stall recovery, so releasing is left to this
+    manual step once the robot is responsive again (typically after
+    re-homing).
   \item Press \emph{Start Sorting} to resume production.
 \end{enumerate}
 
@@ -123,7 +133,9 @@ To recover after an E-stop:
   If a robot command fails during operation (timeout, serial error, robot
   fault), the orchestrator clears its queue and pauses itself
   automatically rather than continuing with a desynchronised state. The
-  incident is logged with the failing command.
+  incident is logged with the failing command, and the gripper is released
+  (best effort) so suction cannot keep holding a part after the pending
+  release was discarded with the queue.
 \end{notebox}
 
 \section{Routine operation checklist}
