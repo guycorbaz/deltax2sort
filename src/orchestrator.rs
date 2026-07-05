@@ -528,6 +528,54 @@ mod tests {
         orch
     }
 
+    /// Orchestrator plus a handle to the mock robot's command log, so tests
+    /// can assert exactly what the robot was told (order included).
+    fn test_orchestrator_with_log() -> (
+        Orchestrator,
+        std::sync::Arc<std::sync::Mutex<Vec<crate::hardware::MockRobotCommand>>>,
+    ) {
+        let mock = crate::hardware::MockRobot::new();
+        let log = mock.command_log();
+        let robot: Arc<Mutex<Box<dyn RobotController>>> = Arc::new(Mutex::new(Box::new(mock)));
+        let (_tx, _state_rx, _error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        (orch, log)
+    }
+
+    #[tokio::test]
+    async fn pick_sequence_commands_the_robot_in_order() {
+        use crate::hardware::MockRobotCommand::*;
+        let (mut orch, log) = test_orchestrator_with_log();
+        orch.handle_message(OrchestratorMsg::Resume);
+        let obj = object_at(50.0, 0.0);
+        let now = obj.seen_at + Duration::from_secs(1);
+        orch.schedule_pick(obj, now);
+        // Drain the queue through execute (the run loop, minus timing/locks).
+        while let Some(cmd) = orch.queue.pop() {
+            orch.execute(cmd).await.unwrap();
+        }
+        let travel = Position {
+            x: 50.0,
+            y: 0.0,
+            z: orch.z_travel,
+        };
+        let pick = Position {
+            x: 50.0,
+            y: 0.0,
+            z: orch.z_pick,
+        };
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                MoveTo(travel),      // approach above
+                MoveTo(pick),        // descend
+                Gripper(true),       // grab (Wait is not a robot command)
+                MoveTo(travel),      // lift
+                MoveTo(orch.drop_pos),
+                Gripper(false), // release over the drop
+            ],
+        );
+    }
+
     #[test]
     fn intercept_upstream_object_is_reachable() {
         // Belt moves toward +Y at 100 mm/s; object 100 mm upstream of the

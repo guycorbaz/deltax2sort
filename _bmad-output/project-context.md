@@ -118,6 +118,9 @@ or bump a dependency unless explicitly asked.
 - **Mock parity**: every new trait method gets BOTH impls (real + mock);
   `cargo run -- --mock` must stay fully functional — no `todo!()` in mocks.
   Camera access only via `CameraDriver`: never open `opencv::videoio` directly.
+  Mocks record the commands they receive: `MockRobot`/`MockConveyor` keep an
+  ordered `command_log()` (a shared `Arc<Mutex<Vec<_>>>`) so tests can assert
+  exactly what the hardware was told; a rejected `move_to` records nothing.
 - **Orchestrator is the only robot commander** (sole bypass: the E-stop path —
   synchronous, on `try_clone`d ports, bypassing the tokio mutexes; never route
   E-stop through the channel, that loses preemption). Talk to it exclusively via

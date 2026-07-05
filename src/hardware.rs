@@ -107,10 +107,24 @@ pub trait RobotController: Send + Sync {
     fn estop_handle(&self) -> Option<Arc<dyn EmergencyStop>>;
 }
 
+/// A command received by [`MockRobot`], recorded in order so tests can assert
+/// exactly what the robot was told (project rule: mocks record their input).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MockRobotCommand {
+    Connect,
+    Home,
+    MoveTo(Position),
+    Gripper(bool),
+    Stop,
+}
+
 pub struct MockRobot {
     connected: bool,
     current_pos: Position,
     limits: WorkspaceLimits,
+    /// Ordered log of received commands, shared so a test can hold a handle
+    /// even after the mock is boxed into a `dyn RobotController`.
+    log: Arc<StdMutex<Vec<MockRobotCommand>>>,
 }
 
 impl MockRobot {
@@ -129,7 +143,22 @@ impl MockRobot {
                 z: 0.0,
             },
             limits,
+            log: Arc::new(StdMutex::new(Vec::new())),
         }
+    }
+
+    /// A clone of the shared command-log handle, for assertions in tests.
+    /// Call it before boxing the mock into a trait object.
+    #[allow(dead_code)]
+    pub fn command_log(&self) -> Arc<StdMutex<Vec<MockRobotCommand>>> {
+        self.log.clone()
+    }
+
+    fn record(&self, cmd: MockRobotCommand) {
+        self.log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(cmd);
     }
 }
 
@@ -139,6 +168,7 @@ impl RobotController for MockRobot {
         info!("MockRobot: Connecting...");
         sleep(Duration::from_millis(500)).await;
         self.connected = true;
+        self.record(MockRobotCommand::Connect);
         info!("MockRobot: Connected!");
         Ok(())
     }
@@ -152,12 +182,15 @@ impl RobotController for MockRobot {
             y: 0.0,
             z: 0.0,
         };
+        self.record(MockRobotCommand::Home);
         info!("MockRobot: Homed.");
         Ok(())
     }
 
     async fn move_to(&mut self, pos: Position) -> Result<()> {
         if !self.limits.contains(pos) {
+            // Rejected before anything is "sent": do not record it, so tests
+            // can assert that a failed move commands the robot nothing.
             return Err(anyhow!(
                 "MockRobot: target {:?} outside workspace {:?}",
                 pos,
@@ -167,6 +200,7 @@ impl RobotController for MockRobot {
         info!("MockRobot: Moving to {:?}", pos);
         sleep(Duration::from_millis(100)).await;
         self.current_pos = pos;
+        self.record(MockRobotCommand::MoveTo(pos));
         Ok(())
     }
 
@@ -174,11 +208,13 @@ impl RobotController for MockRobot {
         let state = if on { "ON (M03)" } else { "OFF (M05)" };
         info!("MockRobot: Gripper {}", state);
         sleep(Duration::from_millis(50)).await;
+        self.record(MockRobotCommand::Gripper(on));
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
         warn!("MockRobot: EMERGENCY STOP TRIGGERED!");
+        self.record(MockRobotCommand::Stop);
         Ok(())
     }
 
@@ -534,13 +570,38 @@ impl ConveyorController for SerialConveyor {
     }
 }
 
+/// A command received by [`MockConveyor`], recorded in order for assertions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MockConveyorCommand {
+    Connect,
+    Start(i32),
+    Stop,
+}
+
 pub struct MockConveyor {
     running: bool,
+    log: Arc<StdMutex<Vec<MockConveyorCommand>>>,
 }
 
 impl MockConveyor {
     pub fn new() -> Self {
-        Self { running: false }
+        Self {
+            running: false,
+            log: Arc::new(StdMutex::new(Vec::new())),
+        }
+    }
+
+    /// A clone of the shared command-log handle, for assertions in tests.
+    #[allow(dead_code)]
+    pub fn command_log(&self) -> Arc<StdMutex<Vec<MockConveyorCommand>>> {
+        self.log.clone()
+    }
+
+    fn record(&self, cmd: MockConveyorCommand) {
+        self.log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(cmd);
     }
 }
 
@@ -548,18 +609,21 @@ impl MockConveyor {
 impl ConveyorController for MockConveyor {
     async fn connect(&mut self) -> Result<()> {
         info!("MockConveyor: Connected");
+        self.record(MockConveyorCommand::Connect);
         Ok(())
     }
 
     async fn start(&mut self, speed: i32) -> Result<()> {
         info!("MockConveyor: Starting at speed {}", speed);
         self.running = true;
+        self.record(MockConveyorCommand::Start(speed));
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
         info!("MockConveyor: Stopped");
         self.running = false;
+        self.record(MockConveyorCommand::Stop);
         Ok(())
     }
 
@@ -761,6 +825,50 @@ mod tests {
             })
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn mock_robot_records_commands_and_skips_rejected_move() {
+        let mut robot = MockRobot::new();
+        let log = robot.command_log();
+        let good = Position {
+            x: 10.0,
+            y: 10.0,
+            z: -50.0,
+        };
+        robot.connect().await.unwrap();
+        robot.move_to(good).await.unwrap();
+        robot.set_gripper(true).await.unwrap();
+        // Out-of-bounds: errors and must NOT appear in the log.
+        assert!(
+            robot
+                .move_to(Position {
+                    x: 9999.0,
+                    y: 0.0,
+                    z: -50.0
+                })
+                .await
+                .is_err()
+        );
+        robot.set_gripper(false).await.unwrap();
+
+        use MockRobotCommand::*;
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![Connect, MoveTo(good), Gripper(true), Gripper(false)],
+            "rejected move commands the robot nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_conveyor_records_start_and_stop() {
+        let mut c = MockConveyor::new();
+        let log = c.command_log();
+        c.connect().await.unwrap();
+        c.start(800).await.unwrap();
+        c.stop().await.unwrap();
+        use MockConveyorCommand::*;
+        assert_eq!(*log.lock().unwrap(), vec![Connect, Start(800), Stop]);
     }
 
     #[tokio::test]
