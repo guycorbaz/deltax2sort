@@ -335,23 +335,25 @@ impl Orchestrator {
                 }
             }
 
-            if let Some(cmd) = self.queue.pop() {
-                if let Err(e) = self.execute(cmd).await {
-                    error!(
-                        "Orchestrator: command failed: {:#}. Clearing queue and pausing; \
-                         send Resume to continue.",
-                        e
-                    );
-                    self.report_error(format!("Robot command failed: {e:#}. Sorting paused."));
-                    self.queue.clear();
-                    self.paused = true;
-                    // The pending Gripper(false) was just discarded with the
-                    // queue: release best-effort so suction can't hold a part
-                    // indefinitely. The robot answered until now, so this is
-                    // not the post-M112 case that could stall.
-                    self.set_gripper_best_effort(false).await;
-                    self.publish_state();
-                }
+            // pop() advances the queue and execute() commands the robot in
+            // both arms of the chain; the body runs only on a command failure.
+            if let Some(cmd) = self.queue.pop()
+                && let Err(e) = self.execute(cmd).await
+            {
+                error!(
+                    "Orchestrator: command failed: {:#}. Clearing queue and pausing; \
+                     send Resume to continue.",
+                    e
+                );
+                self.report_error(format!("Robot command failed: {e:#}. Sorting paused."));
+                self.queue.clear();
+                self.paused = true;
+                // The pending Gripper(false) was just discarded with the
+                // queue: release best-effort so suction can't hold a part
+                // indefinitely. The robot answered until now, so this is
+                // not the post-M112 case that could stall.
+                self.set_gripper_best_effort(false).await;
+                self.publish_state();
             }
         }
         info!("Orchestrator loop stopped (all senders dropped)");
