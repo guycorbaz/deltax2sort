@@ -9,7 +9,10 @@
     \textbf{Option} & \textbf{Effect} \\
     \midrule
     \cfg{-m}, \cfg{--mock} & Use simulated robot, conveyor and camera. No
-      hardware required. \\
+      hardware required. The mock camera renders a synthetic part once per
+      second, so the full detect~$\rightarrow$~track~$\rightarrow$~pick path
+      runs (press \emph{Start Sorting} to see the simulated robot execute the
+      picks). \\
     \cfg{-c}, \cfg{--config <path>} & Configuration file
       (default \cfg{Settings.toml}). \\
     \cfg{-h}, \cfg{--help} & Show help. \\

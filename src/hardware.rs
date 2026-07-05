@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use log::{debug, info, warn};
-use opencv::{core, prelude::*, videoio};
+use opencv::{core, imgproc, prelude::*, videoio};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -756,11 +756,30 @@ pub struct MockCamera {
     width: u32,
     height: u32,
     fps: u32,
+    /// Matches `[vision].invert` so the synthetic blob contrasts the belt the
+    /// way the configured detector expects (dark-on-light when inverted).
+    invert: bool,
+    /// Frame counter driving the deterministic blob cycle.
+    frame: u64,
 }
 
 impl MockCamera {
-    pub fn new(width: u32, height: u32, fps: u32) -> Self {
-        Self { width, height, fps }
+    /// Side of the synthetic square blob, in pixels (area 1600 px² sits inside
+    /// the default `[vision]` min/max area band).
+    const BLOB_PX: i32 = 40;
+    /// Frames the blob is absent at the end of each cycle. Must exceed the
+    /// tracker's `max_missed_frames` (5) so the track is evicted and the next
+    /// appearance is a NEW object with a new id and its own Pick.
+    const GAP_FRAMES: u64 = 8;
+
+    pub fn new(width: u32, height: u32, fps: u32, invert: bool) -> Self {
+        Self {
+            width,
+            height,
+            fps,
+            invert,
+            frame: 0,
+        }
     }
 }
 
@@ -775,12 +794,35 @@ impl CameraDriver for MockCamera {
     }
 
     async fn get_frame(&mut self) -> Result<core::Mat> {
-        let frame = core::Mat::new_rows_cols_with_default(
+        // Background vs. blob values chosen so the configured threshold splits
+        // them for either invert setting: dark blob on light belt when the
+        // detector looks for darker-than-belt objects, else the reverse.
+        let (bg, blob_val) = if self.invert { (200.0, 0.0) } else { (0.0, 255.0) };
+        let mut frame = core::Mat::new_rows_cols_with_default(
             self.height as i32,
             self.width as i32,
             core::CV_8UC3,
-            core::Scalar::all(0.0),
+            core::Scalar::all(bg),
         )?;
+
+        // One centred blob (→ world ≈ origin, safely inside the workspace),
+        // present for most of each ~1 s cycle then absent for GAP_FRAMES so
+        // each cycle yields exactly one fresh Pick.
+        let cycle = self.fps.max(1) as u64;
+        if self.frame % cycle < cycle.saturating_sub(Self::GAP_FRAMES) {
+            let x = self.width as i32 / 2 - Self::BLOB_PX / 2;
+            let y = self.height as i32 / 2 - Self::BLOB_PX / 2;
+            imgproc::rectangle(
+                &mut frame,
+                core::Rect::new(x, y, Self::BLOB_PX, Self::BLOB_PX),
+                core::Scalar::all(blob_val),
+                imgproc::FILLED,
+                imgproc::LINE_8,
+                0,
+            )?;
+        }
+        self.frame += 1;
+
         sleep(Duration::from_millis(1000 / self.fps.max(1) as u64)).await;
         Ok(frame)
     }

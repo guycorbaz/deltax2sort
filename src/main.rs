@@ -95,7 +95,12 @@ async fn main() -> anyhow::Result<()> {
     let cam_cfg = &config.camera;
     let mut camera: Box<dyn CameraDriver> = if args.mock {
         info!("Using Mock Camera");
-        Box::new(MockCamera::new(cam_cfg.width, cam_cfg.height, cam_cfg.fps))
+        Box::new(MockCamera::new(
+            cam_cfg.width,
+            cam_cfg.height,
+            cam_cfg.fps,
+            config.vision.invert,
+        ))
     } else {
         info!("Connecting to real Camera (device {})", cam_cfg.device_id);
         Box::new(OpencvCamera::new(

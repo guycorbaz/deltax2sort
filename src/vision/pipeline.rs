@@ -256,6 +256,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn mock_camera_frames_drive_the_pipeline_to_a_pick() {
+        use crate::hardware::{CameraDriver, MockCamera};
+        // Default config (invert = true): MockCamera renders a dark blob on a
+        // light belt, which the configured detector must pick up.
+        let cfg = AppConfig::default();
+        let mut cam = MockCamera::new(cfg.camera.width, cfg.camera.height, cfg.camera.fps, cfg.vision.invert);
+        cam.connect().await.unwrap();
+        let (w, h) = cam.resolution();
+        let mut pipeline = VisionPipeline::new(&cfg, w, h);
+
+        let mut picks = 0usize;
+        for _ in 0..6 {
+            let frame = cam.get_frame().await.unwrap();
+            let ready = pipeline
+                .process_frame(&frame, Duration::from_millis(33), Instant::now(), false)
+                .unwrap();
+            for obj in &ready {
+                let p = obj.world_pos.expect("pick must carry a world position");
+                // Centred blob → robot origin (within a couple of mm).
+                assert!(p.x.abs() < 5.0 && p.y.abs() < 5.0, "world pos: {p:?}");
+            }
+            picks += ready.len();
+        }
+        assert_eq!(picks, 1, "the mock part is picked exactly once");
+    }
+
     #[test]
     fn stopped_belt_does_not_re_emit_a_stationary_object() {
         // Non-zero configured belt speed, but the belt is NOT running. A part
