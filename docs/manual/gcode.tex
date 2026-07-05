@@ -94,8 +94,11 @@ Moves all axes to their home position (top endstops).
 \index{G-code!G90@\texttt{G90}}\index{G-code!G91@\texttt{G91}}%
 \begin{itemize}
   \item \cfg{G90}: interpret subsequent coordinates as absolute positions
-    relative to the origin. The application sets this mode right after
-    homing.
+    relative to the origin. The application forces this mode at the end of
+    every connection --- before any move can be issued and regardless of
+    \cfg{home\_on\_connect} --- and re-asserts it after homing. All
+    \cfg{G01} moves and the workspace safety check assume absolute
+    coordinates.
   \item \cfg{G91}: interpret subsequent coordinates as displacements from
     the current position (useful for jogging).
 \end{itemize}

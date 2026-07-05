@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use log::{debug, info, warn};
 use opencv::{core, prelude::*, videoio};
@@ -363,14 +363,25 @@ impl RobotController for DeltaX2 {
         let estop = port.try_clone()?;
         self.port = Some(Arc::new(StdMutex::new(port)));
         self.estop_port = Some(Arc::new(StdMutex::new(estop)));
-        info!("DeltaX2: Validated and Connected.");
+
+        // Force absolute positioning immediately, before any move can be
+        // issued. Every `G01 X.. Y.. Z..` and the workspace check in `move_to`
+        // assume absolute coordinates; if the firmware booted in (or was left
+        // in) G91 relative mode, coordinates would be misinterpreted and the
+        // safety check would validate the wrong frame. Do NOT gate this on
+        // homing — `home_on_connect` may be false.
+        self.write_gcode("G90")
+            .await
+            .context("setting absolute positioning (G90) on connect")?;
+        info!("DeltaX2: Validated and Connected (absolute mode).");
         Ok(())
     }
 
     async fn home(&mut self) -> Result<()> {
         info!("DeltaX2: Homing...");
         self.write_gcode("G28").await?;
-        // Set absolute positioning as default after home
+        // Re-assert absolute positioning after homing (connect already set it,
+        // but keep the invariant explicit around G28).
         self.write_gcode("G90").await?;
         Ok(())
     }

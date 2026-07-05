@@ -28,8 +28,9 @@ RUST_LOG=debug cargo run               # includes G-code level tracing
 \section{Startup sequence}
 \index{startup sequence}\index{handshake}\index{homing}%
 On start the application: loads and validates the configuration; connects
-to the robot (\cfg{IsDelta} handshake, Appendix~\ref{app:gcode}) and homes
-it if \cfg{home\_on\_connect} is set; connects to the conveyor; acquires
+to the robot (\cfg{IsDelta} handshake, Appendix~\ref{app:gcode}), forces
+absolute positioning (\cfg{G90}), and homes it if \cfg{home\_on\_connect}
+is set; connects to the conveyor; acquires
 the emergency-stop handles; connects to the camera; starts the
 orchestrator; starts the vision loop (which takes ownership of the camera
 and turns detected objects into pick requests); and finally opens the
