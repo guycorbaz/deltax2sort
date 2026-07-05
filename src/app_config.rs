@@ -185,11 +185,21 @@ impl Default for AppConfig {
     }
 }
 
+/// Delta X2 (SP-X2) physical envelope. Configured workspace bounds may be
+/// tighter than this but never wider — a typo like `x_max = 1600.0` must not
+/// let `move_to` accept unreachable targets.
+const ENVELOPE_XY_MM: f32 = 160.0;
+const ENVELOPE_Z_MIN_MM: f32 = -200.0;
+const ENVELOPE_Z_MAX_MM: f32 = 0.0;
+
 impl AppConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if !path.exists() {
             let default_config = Self::default();
+            // Guard the default-creation path too: never write or return a
+            // config that would not pass validation.
+            default_config.validate()?;
             default_config.save(path)?;
             return Ok(default_config);
         }
@@ -228,6 +238,41 @@ impl AppConfig {
             r.z_travel,
             r.z_pick
         );
+        // Workspace must stay within the physical envelope (also rejects NaN
+        // bounds, which fail every comparison).
+        ensure!(
+            r.x_min >= -ENVELOPE_XY_MM && r.x_max <= ENVELOPE_XY_MM,
+            "robot X bounds [{}, {}] exceed the physical envelope [±{} mm]",
+            r.x_min,
+            r.x_max,
+            ENVELOPE_XY_MM
+        );
+        ensure!(
+            r.y_min >= -ENVELOPE_XY_MM && r.y_max <= ENVELOPE_XY_MM,
+            "robot Y bounds [{}, {}] exceed the physical envelope [±{} mm]",
+            r.y_min,
+            r.y_max,
+            ENVELOPE_XY_MM
+        );
+        ensure!(
+            r.z_min >= ENVELOPE_Z_MIN_MM && r.z_max <= ENVELOPE_Z_MAX_MM,
+            "robot Z bounds [{}, {}] exceed the physical envelope [{}, {}] mm",
+            r.z_min,
+            r.z_max,
+            ENVELOPE_Z_MIN_MM,
+            ENVELOPE_Z_MAX_MM
+        );
+        ensure!(r.baud_rate > 0, "robot.baud_rate must be non-zero");
+        ensure!(
+            r.feed_rate > 0,
+            "robot.feed_rate must be non-zero (F0 would stall every move)"
+        );
+        let c = &self.conveyor;
+        ensure!(c.baud_rate > 0, "conveyor.baud_rate must be non-zero");
+        ensure!(
+            c.speed_mm_s.is_finite(),
+            "conveyor.speed_mm_s must be finite (NaN/inf poisons belt-shift and the planner)"
+        );
         let s = &self.sorting;
         ensure!(
             s.drop_x >= r.x_min
@@ -260,6 +305,10 @@ impl AppConfig {
         ensure!(
             (0.0..=255.0).contains(&v.threshold),
             "vision.threshold must be within 0-255"
+        );
+        ensure!(
+            v.min_area.is_finite() && v.min_area >= 0.0 && v.max_area.is_finite(),
+            "vision.min_area/max_area must be finite and non-negative"
         );
         ensure!(
             v.min_area < v.max_area,
@@ -338,6 +387,49 @@ mod tests {
     fn validate_rejects_drop_position_outside_workspace() {
         let mut cfg = AppConfig::default();
         cfg.sorting.drop_x = 500.0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_feed_rate() {
+        let mut cfg = AppConfig::default();
+        cfg.robot.feed_rate = 0; // would emit F0 and stall every move
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_baud_rate() {
+        let mut cfg = AppConfig::default();
+        cfg.robot.baud_rate = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = AppConfig::default();
+        cfg.conveyor.baud_rate = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_non_finite_belt_speed() {
+        let mut cfg = AppConfig::default();
+        cfg.conveyor.speed_mm_s = f32::NAN;
+        assert!(cfg.validate().is_err());
+        cfg.conveyor.speed_mm_s = f32::INFINITY;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_negative_min_area() {
+        let mut cfg = AppConfig::default();
+        cfg.vision.min_area = -1.0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_workspace_beyond_physical_envelope() {
+        let mut cfg = AppConfig::default();
+        cfg.robot.x_max = 1600.0; // typo: 10x the real envelope
+        assert!(cfg.validate().is_err());
+        let mut cfg = AppConfig::default();
+        cfg.robot.z_min = -500.0; // below the -200 mm floor
         assert!(cfg.validate().is_err());
     }
 

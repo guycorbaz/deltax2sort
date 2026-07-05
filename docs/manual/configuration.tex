@@ -42,16 +42,22 @@ created on first start.
 \end{table}
 
 Constraints enforced by validation: each axis minimum must be below its
-maximum; \cfg{z\_pick} and \cfg{z\_travel} must lie within
+maximum; the bounds must stay within the physical envelope (X/Y
+$\pm 160$\,mm, Z $[-200, 0]$\,mm) --- they may be tighter but never wider;
+\cfg{z\_pick} and \cfg{z\_travel} must lie within
 $[\cfg{z\_min}, \cfg{z\_max}]$; \cfg{z\_travel} must be above
-\cfg{z\_pick}.
+\cfg{z\_pick}; and \cfg{baud\_rate} and \cfg{feed\_rate} must be non-zero
+(an \cfg{F0} feed rate would stall every move). A configuration that
+violates any of these is rejected at startup before any hardware is
+touched.
 
 \begin{warningbox}
   Reducing \cfg{x\_min}/\cfg{x\_max}/\cfg{y\_min}/\cfg{y\_max} below the
   physical maximum is a legitimate way to keep the robot away from
-  fixtures near the belt. Never \emph{extend} them beyond the Delta X2
-  specification (X/Y $\pm 160$\,mm, Z $[-200, 0]$\,mm; see
-  Appendix~\ref{app:gcode}).
+  fixtures near the belt. Extending them beyond the Delta X2 specification
+  (X/Y $\pm 160$\,mm, Z $[-200, 0]$\,mm; see Appendix~\ref{app:gcode}) is
+  now rejected by validation, since it would let \cfg{move\_to} accept
+  unreachable targets.
 \end{warningbox}
 
 \section{Section \texttt{[conveyor]}}
