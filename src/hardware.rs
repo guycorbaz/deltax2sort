@@ -255,7 +255,6 @@ fn send_and_wait_feedback(
     let mut reader = BufReader::new(&mut **p);
     let mut line = String::new();
     loop {
-        line.clear();
         match reader.read_line(&mut line) {
             Ok(0) => {
                 // EOF: port closed / device unplugged. Previously this
@@ -275,8 +274,15 @@ fn send_and_wait_feedback(
                 } else {
                     debug!("DeltaX2: ignoring unexpected line '{}'", t);
                 }
+                // A complete line was consumed: only now is it safe to
+                // clear the buffer.
+                line.clear();
             }
             // Per-read timeout (2 s) — keep polling until the deadline.
+            // Any partial bytes already received stay in `line` and are
+            // completed by the next read: clearing here would corrupt an
+            // echo that straddles the read-timeout boundary and turn a
+            // physically completed command into a false 30 s failure.
             Err(e) if e.kind() == ErrorKind::TimedOut => {}
             Err(e) => return Err(anyhow!("reading feedback for '{}': {}", cmd, e)),
         }
@@ -313,8 +319,8 @@ impl RobotController for DeltaX2 {
                 // Scan past any boot banner until the handshake answer.
                 let deadline = Instant::now() + Duration::from_secs(5);
                 let mut reader = BufReader::new(&mut port);
+                let mut line = String::new();
                 loop {
-                    let mut line = String::new();
                     match reader.read_line(&mut line) {
                         Ok(0) => return Err(anyhow!("serial port closed during handshake")),
                         Ok(_) => {
@@ -325,7 +331,10 @@ impl RobotController for DeltaX2 {
                             if !t.is_empty() {
                                 debug!("DeltaX2: handshake, skipping line '{}'", t);
                             }
+                            line.clear();
                         }
+                        // Keep partial bytes across read timeouts — see
+                        // send_and_wait_feedback for the rationale.
                         Err(e) if e.kind() == ErrorKind::TimedOut => {}
                         Err(e) => return Err(e.into()),
                     }
