@@ -2,6 +2,7 @@ pub mod calibration;
 pub mod catalog;
 pub mod classifier;
 pub mod detector;
+pub mod embedder;
 pub mod pipeline;
 pub mod tracker;
 

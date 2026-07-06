@@ -1,10 +1,11 @@
 use super::calibration::{CalibrationParams, CoordinateTransformer};
 use super::detector::BlobDetector;
+use super::embedder::Recognizer;
 use super::tracker::Tracker;
 use super::{ClassName, DetectedObject};
 use anyhow::{Context, Result, anyhow};
 use log::{debug, error, info, warn};
-use opencv::core::{Mat, Scalar, Size};
+use opencv::core::{Mat, Rect, Scalar, Size};
 use opencv::{imgproc, prelude::*};
 use slint::{Rgb8Pixel, SharedPixelBuffer};
 use std::time::{Duration, Instant};
@@ -14,6 +15,35 @@ use tokio::sync::{mpsc, watch};
 /// downscaled for the display. Latest-wins: the UI only ever shows the newest,
 /// so accumulated latency can never lie to the operator about belt position.
 pub type FrameImage = SharedPixelBuffer<Rgb8Pixel>;
+
+/// Recognise the object in `rect` of `frame`: crop, embed, nearest-neighbour.
+/// A failure (bad ROI, inference error) logs and yields `None` rather than
+/// aborting the frame — a missed classification just leaves the object
+/// unrecognised (and unsorted), never crashes the loop.
+fn classify_roi(rec: &Recognizer, frame: &Mat, rect: &Rect) -> Option<ClassName> {
+    match crop_roi(frame, rect).and_then(|roi| rec.classify(&roi)) {
+        Ok(class) => class,
+        Err(e) => {
+            warn!("Vision: recognition failed for a track: {e:#}");
+            None
+        }
+    }
+}
+
+/// Clamp `rect` to the frame and return an owned crop. Detections can sit
+/// partly off-frame near the edges; clamping keeps the ROI valid.
+fn crop_roi(frame: &Mat, rect: &Rect) -> Result<Mat> {
+    let (fw, fh) = (frame.cols(), frame.rows());
+    let x = rect.x.max(0);
+    let y = rect.y.max(0);
+    let w = rect.width.min(fw - x);
+    let h = rect.height.min(fh - y);
+    if w <= 0 || h <= 0 {
+        return Err(anyhow!("empty ROI for rect {rect:?} in {fw}x{fh} frame"));
+    }
+    let roi = Mat::roi(frame, Rect::new(x, y, w, h))?;
+    Ok(roi.try_clone()?)
+}
 
 /// Max display size the feed is downscaled to before the Mat→Image conversion
 /// (the Pi panel is 800x480 and the preview occupies only part of it).
@@ -89,6 +119,9 @@ pub struct VisionPipeline {
     belt_speed_mm_s: f32,
     /// Camera scale at the belt plane, mm per pixel.
     mm_per_px: f32,
+    /// Object recogniser, when `[recognition]` is enabled and a model loaded.
+    /// `None` = recognition off: every object stays unrecognised (unsorted).
+    recognizer: Option<Recognizer>,
 }
 
 impl VisionPipeline {
@@ -104,7 +137,13 @@ impl VisionPipeline {
             )),
             belt_speed_mm_s: config.conveyor.speed_mm_s,
             mm_per_px,
+            recognizer: None,
         }
+    }
+
+    /// Attach a recogniser (called once, at startup, when recognition is on).
+    pub fn set_recognizer(&mut self, recognizer: Recognizer) {
+        self.recognizer = Some(recognizer);
     }
 
     /// Process one frame captured `dt` after the previous one, at
@@ -136,6 +175,14 @@ impl VisionPipeline {
         };
 
         self.tracker.update(detections, belt_shift_px);
+        // Recognise each track once, as it becomes pick-ready, and cache the
+        // class on the track (drives routing and the overlay). `rec` is bound
+        // before the mutable tracker borrow so the two disjoint fields don't
+        // conflict.
+        if let Some(rec) = self.recognizer.as_ref() {
+            self.tracker
+                .classify_ready_tracks(MIN_SEEN_FRAMES, |rect| classify_roi(rec, frame, rect));
+        }
         let mut ready = self.tracker.take_ready(MIN_SEEN_FRAMES);
         for obj in &mut ready {
             let cx = obj.rect.x as f32 + obj.rect.width as f32 / 2.0;
@@ -201,6 +248,21 @@ pub fn spawn_vision_loop(
     let (width, height) = camera.resolution();
     let mm_per_px = config.vision.mm_per_px;
     let mut pipeline = VisionPipeline::new(config, width, height);
+
+    // Attach the recogniser if enabled; a load failure disables recognition
+    // (objects stay unrecognised → unsorted) rather than aborting startup.
+    if config.recognition.enabled {
+        match Recognizer::load(&config.recognition) {
+            Ok(rec) => {
+                info!(
+                    "Vision: recognition enabled ({} class(es) in the catalogue)",
+                    rec.class_count()
+                );
+                pipeline.set_recognizer(rec);
+            }
+            Err(e) => warn!("Vision: recognition disabled — {e:#}"),
+        }
+    }
 
     tokio::spawn(async move {
         info!(

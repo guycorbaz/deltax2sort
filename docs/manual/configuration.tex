@@ -222,6 +222,36 @@ launch with \cfg{--profile}):
   \caption{\cfg{[ui]} keys}
 \end{table}
 
+\section{Section \texttt{[recognition]}}
+\index{configuration!recognition@\texttt{[recognition]}}\index{recognition}\index{object catalogue}%
+Object recognition pairs an ONNX image embedder with a nearest-neighbour
+\emph{catalogue} (the portable "learned file"): each object crop is embedded,
+then matched by cosine similarity against the labelled examples you have
+taught. It is \emph{disabled by default} --- nothing is recognised, and (since
+sorting keys on class) nothing is picked, until you generate a model and teach
+some classes. Recognition is independent of bins: see \S\ref{sec:calibration}
+and the \cfg{[sorting]} assignments for how a recognised class is routed.
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    enabled & false & Master switch. While false the classifier is a stub:
+      every object is unrecognised. \\
+    model\_path & "models/embedder.onnx" & ONNX embedder produced by
+      \cfg{python models/export\_embedder.py} (see \cfg{models/README.md}). \\
+    catalog\_path & "catalog.toml" & The learned catalogue. Portable --- copy
+      it from the teaching workstation to the Pi. Absent = start empty. \\
+    match\_threshold & 0.7 & Minimum cosine similarity (in $[-1,1]$) to accept
+      a match; below it the object is left unrecognised. \\
+    input\_size & 224 & Square input size the embedder expects; must match the
+      export script. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[recognition]} keys}
+\end{table}
+
 \section{Camera calibration}
 \label{sec:calibration}
 \index{calibration}\index{camera!calibration}\index{coordinate transform}%

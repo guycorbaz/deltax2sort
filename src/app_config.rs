@@ -17,6 +17,41 @@ pub struct AppConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub recognition: RecognitionConfig,
+}
+
+/// Object recognition (issue #47 phase B): an ONNX embedder + a nearest-
+/// neighbour catalogue. Disabled by default, so a fresh install (and mock
+/// runs) sorts nothing until a model and catalogue are in place.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct RecognitionConfig {
+    /// Master switch. When false the classifier stays a stub (everything is
+    /// unrecognised → nothing is picked).
+    pub enabled: bool,
+    /// Path to the ONNX embedder produced by `models/export_embedder.py`.
+    pub model_path: String,
+    /// Path to the learned catalogue (the portable "learned file"). May not
+    /// exist yet — recognition then starts from an empty catalogue.
+    pub catalog_path: String,
+    /// Minimum cosine similarity (in [-1, 1]) for a match; below it the object
+    /// is left unrecognised (and unsorted).
+    pub match_threshold: f32,
+    /// Square input size the embedder expects (must match the export script).
+    pub input_size: u32,
+}
+
+impl Default for RecognitionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_path: "models/embedder.onnx".to_string(),
+            catalog_path: "catalog.toml".to_string(),
+            match_threshold: 0.7,
+            input_size: 224,
+        }
+    }
 }
 
 /// Which operator profile the single binary runs as. Selected by config
@@ -265,6 +300,7 @@ impl Default for AppConfig {
             vision: VisionConfig::default(),
             logging: LoggingConfig::default(),
             ui: UiConfig::default(),
+            recognition: RecognitionConfig::default(),
         }
     }
 }
@@ -427,6 +463,23 @@ impl AppConfig {
             !lg.directory.trim().is_empty(),
             "logging.directory must not be empty"
         );
+        // Recognition numeric ranges (paths are not checked here — the model
+        // and catalogue may legitimately be generated after first run).
+        let rc = &self.recognition;
+        ensure!(
+            (-1.0..=1.0).contains(&rc.match_threshold),
+            "recognition.match_threshold must be a cosine similarity in [-1, 1]"
+        );
+        ensure!(
+            rc.input_size > 0,
+            "recognition.input_size must be non-zero"
+        );
+        if rc.enabled {
+            ensure!(
+                !rc.model_path.trim().is_empty() && !rc.catalog_path.trim().is_empty(),
+                "recognition.model_path and catalog_path must be set when recognition is enabled"
+            );
+        }
         // Catch a typo'd level spec at startup rather than silently logging
         // nothing (or panicking inside the logger).
         ensure!(
@@ -568,6 +621,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.ui.profile, UiProfile::Workstation);
+    }
+
+    #[test]
+    fn recognition_defaults_off_and_validates_ranges() {
+        let cfg = AppConfig::default();
+        assert!(!cfg.recognition.enabled, "recognition must be off by default");
+        assert_eq!(cfg.recognition.input_size, 224);
+        cfg.validate().unwrap();
+
+        let mut bad = AppConfig::default();
+        bad.recognition.match_threshold = 2.0; // outside cosine range
+        assert!(bad.validate().is_err());
+
+        let mut bad = AppConfig::default();
+        bad.recognition.input_size = 0;
+        assert!(bad.validate().is_err());
     }
 
     #[test]

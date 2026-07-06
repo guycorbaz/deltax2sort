@@ -17,6 +17,9 @@ pub struct TrackedObject {
     /// Set once the track has been emitted by `take_ready` — this is the
     /// one-object-one-Pick guarantee.
     pub reported: bool,
+    /// Set once recognition has been attempted (whatever the result), so each
+    /// object is embedded at most once over its lifetime.
+    pub classified: bool,
     pub detected: DetectedObject,
 }
 
@@ -128,6 +131,7 @@ impl Tracker {
                 missed_frames: 0,
                 frames_seen: 1,
                 reported: false,
+                classified: false,
                 detected: det,
             });
         }
@@ -143,6 +147,22 @@ impl Tracker {
             .filter(|t| t.missed_frames == 0)
             .map(|t| (t.last_rect, t.detected.class.clone()))
             .collect()
+    }
+
+    /// Recognise each visible track that has reached `min_seen` frames and has
+    /// not been classified yet, caching the class on the track (so an object is
+    /// embedded once, and the overlay + the emitted pick both see the class).
+    /// `classify(rect)` returns the recognised class name, or `None`.
+    pub fn classify_ready_tracks<F>(&mut self, min_seen: u32, mut classify: F)
+    where
+        F: FnMut(&Rect) -> Option<super::ClassName>,
+    {
+        for t in &mut self.tracks {
+            if !t.classified && t.missed_frames == 0 && t.frames_seen >= min_seen {
+                t.detected.class = classify(&t.last_rect);
+                t.classified = true;
+            }
+        }
     }
 
     /// Return every track detected in at least `min_seen` frames that has
@@ -250,6 +270,35 @@ mod tests {
             "reappearing object must rejoin its belt-drifted track, not spawn a new one"
         );
         assert_eq!(tracker.tracks[0].id, 1);
+    }
+
+    #[test]
+    fn ready_tracks_are_classified_once_and_cached() {
+        let mut tracker = Tracker::new();
+        let mut calls = 0;
+        // Below min_seen: not classified yet.
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        tracker.classify_ready_tracks(3, |_| {
+            calls += 1;
+            Some("brick".to_string())
+        });
+        assert_eq!(calls, 0, "not classified before reaching min_seen");
+        // Third sighting → ready → classified exactly once.
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        tracker.classify_ready_tracks(3, |_| {
+            calls += 1;
+            Some("brick".to_string())
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(tracker.current_overlays()[0].1.as_deref(), Some("brick"));
+        // A later frame must NOT re-embed (cached).
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        tracker.classify_ready_tracks(3, |_| {
+            calls += 1;
+            Some("brick".to_string())
+        });
+        assert_eq!(calls, 1, "an object is classified at most once");
     }
 
     #[test]
