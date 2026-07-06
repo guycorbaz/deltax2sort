@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use log::{debug, info, warn};
 use opencv::{core, imgproc, prelude::*, videoio};
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -318,44 +318,48 @@ fn send_and_wait_feedback(
     p.flush()?;
 
     let deadline = Instant::now() + timeout;
-    let mut reader = BufReader::new(&mut **p);
+    // Read one byte at a time rather than through a per-command BufReader: a
+    // BufReader buffers whatever the device sent past the matched echo and
+    // discards it when dropped at the end of the command. Reading byte-by-byte
+    // consumes exactly up to the echo's newline and leaves anything after it in
+    // the OS buffer for the next command (reader-lifecycle fix, #41).
     let mut line = String::new();
+    let mut byte = [0u8; 1];
     loop {
-        match reader.read_line(&mut line) {
+        match p.read(&mut byte) {
             Ok(0) => {
-                // EOF: port closed / device unplugged. Previously this
-                // spun forever on the empty line.
+                // EOF: port closed / device unplugged.
                 return Err(anyhow!("serial port closed while waiting for '{}'", cmd));
             }
-            Ok(_) => {
-                let t = line.trim();
-                if t == fb_id {
-                    debug!("DeltaX2: command executed ({})", cmd);
-                    return Ok(());
-                } else if t.is_empty() || t.eq_ignore_ascii_case("ok") {
-                    // 'ok' acknowledges receipt; keep waiting for the
-                    // FEEDBACK echo that marks physical completion.
-                } else if t.to_ascii_lowercase().contains("error") {
-                    return Err(anyhow!("robot reported error for '{}': {}", cmd, t));
-                } else {
-                    debug!("DeltaX2: ignoring unexpected line '{}'", t);
+            Ok(_) => match byte[0] {
+                b'\n' => {
+                    let t = line.trim();
+                    if t == fb_id {
+                        debug!("DeltaX2: command executed ({})", cmd);
+                        return Ok(());
+                    } else if t.is_empty() || t.eq_ignore_ascii_case("ok") {
+                        // 'ok' acknowledges receipt; keep waiting for the
+                        // FEEDBACK echo that marks physical completion.
+                    } else if is_error_response(t) {
+                        return Err(anyhow!("robot reported error for '{}': {}", cmd, t));
+                    } else {
+                        debug!("DeltaX2: ignoring unexpected line '{}'", t);
+                    }
+                    line.clear();
                 }
-                // A complete line was consumed: only now is it safe to
-                // clear the buffer.
-                line.clear();
-            }
-            // Per-read timeout (2 s) — keep polling until the deadline.
-            // Any partial bytes already received stay in `line` and are
-            // completed by the next read: clearing here would corrupt an
-            // echo that straddles the read-timeout boundary and turn a
-            // physically completed command into a false 30 s failure.
+                b'\r' => {} // ignore CR so a CRLF terminator is handled
+                c => line.push(c as char), // the protocol is ASCII
+            },
+            // Per-read timeout: keep the partial line and poll until the overall
+            // deadline. Clearing here would corrupt an echo straddling the
+            // read-timeout boundary and turn a completed command into a false
+            // failure.
             Err(e) if e.kind() == ErrorKind::TimedOut => {}
             Err(e) => return Err(anyhow!("reading feedback for '{}': {}", cmd, e)),
         }
-        // Checked once per loop turn — i.e. after each read, which is itself
-        // bounded by the ~2 s per-read serial timeout. So an E-stop that fires
-        // mid-command surfaces within one read window instead of after the
-        // full 30 s deadline, letting Home/Pause/Resume proceed promptly.
+        // Checked once per loop turn (bounded by the ~2 s per-read serial
+        // timeout): an E-stop mid-command surfaces within one read window
+        // instead of after the full 30 s deadline.
         if cancel.load(Ordering::SeqCst) {
             warn!("DeltaX2: '{}' aborted by emergency stop (feedback wait cut short)", cmd);
             return Err(anyhow!("'{}' aborted by emergency stop", cmd));
@@ -368,6 +372,15 @@ fn send_and_wait_feedback(
             ));
         }
     }
+}
+
+/// Whether a response line reports a command error. Anchored on the line start
+/// (not a substring), so a boot banner or an unsolicited notice that merely
+/// mentions "error" mid-line does not fail the current command. The exact Delta
+/// X2 error format is unverified against real hardware (#45); an "error" prefix
+/// is the documented-style convention.
+fn is_error_response(line: &str) -> bool {
+    line.to_ascii_lowercase().starts_with("error")
 }
 
 #[async_trait]
@@ -390,25 +403,30 @@ impl RobotController for DeltaX2 {
                 port.write_all(b"IsDelta\n")?;
                 port.flush()?;
 
-                // Scan past any boot banner until the handshake answer.
+                // Scan past any boot banner until the handshake answer. Read
+                // one byte at a time (no BufReader) so no bytes are buffered
+                // past the answer and then discarded — see send_and_wait_feedback.
                 let deadline = Instant::now() + Duration::from_secs(5);
-                let mut reader = BufReader::new(&mut port);
                 let mut line = String::new();
+                let mut byte = [0u8; 1];
                 loop {
-                    match reader.read_line(&mut line) {
+                    match port.read(&mut byte) {
                         Ok(0) => return Err(anyhow!("serial port closed during handshake")),
-                        Ok(_) => {
-                            let t = line.trim();
-                            if t == "YesDelta" {
-                                break;
+                        Ok(_) => match byte[0] {
+                            b'\n' => {
+                                let t = line.trim();
+                                if t == "YesDelta" {
+                                    break;
+                                }
+                                if !t.is_empty() {
+                                    debug!("DeltaX2: handshake, skipping line '{}'", t);
+                                }
+                                line.clear();
                             }
-                            if !t.is_empty() {
-                                debug!("DeltaX2: handshake, skipping line '{}'", t);
-                            }
-                            line.clear();
-                        }
-                        // Keep partial bytes across read timeouts — see
-                        // send_and_wait_feedback for the rationale.
+                            b'\r' => {}
+                            c => line.push(c as char),
+                        },
+                        // Keep the partial line across read timeouts.
                         Err(e) if e.kind() == ErrorKind::TimedOut => {}
                         Err(e) => return Err(e.into()),
                     }
@@ -419,7 +437,6 @@ impl RobotController for DeltaX2 {
                         ));
                     }
                 }
-                drop(reader);
                 Ok(port)
             })
             .await??;
@@ -1045,10 +1062,11 @@ mod tests {
                 Some(ReadStep::Bytes(bytes)) => {
                     let n = bytes.len().min(buf.len());
                     buf[..n].copy_from_slice(&bytes[..n]);
-                    // A single scripted chunk never exceeds the 8 KiB BufReader
-                    // buffer in these tests; if it did we'd drop the tail, so
-                    // guard against silently mis-scripting a test.
-                    assert_eq!(n, bytes.len(), "scripted chunk larger than read buffer");
+                    // The driver reads one byte at a time; keep any tail of this
+                    // chunk for the next read instead of dropping it.
+                    if n < bytes.len() {
+                        self.reads.push_front(ReadStep::Bytes(&bytes[n..]));
+                    }
                     Ok(n)
                 }
                 Some(ReadStep::Timeout) => {
@@ -1229,6 +1247,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("reported error"), "got: {err}");
+    }
+
+    #[test]
+    fn a_line_merely_mentioning_error_does_not_fail_the_command() {
+        // Anchored matching: "error" mid-line (a banner / notice) is not this
+        // command's failure — only a line that STARTS with "error" is.
+        let (port, _) = scripted(
+            vec![
+                ReadStep::Bytes(b"no error detected, homing ok\n"),
+                ReadStep::Bytes(b"sync_1\n"),
+            ],
+            WhenDone::Eof,
+        );
+        assert!(
+            wait_fb(&port, "G28", "sync_1", Duration::from_secs(1)).is_ok(),
+            "a mid-line 'error' must not fail the command"
+        );
+    }
+
+    #[test]
+    fn bytes_after_the_echo_survive_for_the_next_command() {
+        // One serial chunk carries this command's echo AND the next command's.
+        // Byte-at-a-time reading must leave the second echo for the next call
+        // (a per-command BufReader would have buffered and discarded it).
+        let (port, _) = scripted(vec![ReadStep::Bytes(b"sync_1\nsync_2\n")], WhenDone::Eof);
+        assert!(wait_fb(&port, "G01", "sync_1", Duration::from_secs(1)).is_ok());
+        assert!(
+            wait_fb(&port, "G02", "sync_2", Duration::from_secs(1)).is_ok(),
+            "the leftover echo must not be discarded between commands"
+        );
     }
 
     #[test]
