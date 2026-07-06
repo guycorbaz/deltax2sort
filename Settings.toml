@@ -95,3 +95,10 @@ directory = "logs"
 to_console = true
 # How many rotated daily files to keep; older are pruned. 0 = keep them all.
 keep_days = 7
+
+[ui]
+# Operator profile (one binary, two roles). "pi" = 800x480 touch panel, sorting
+# controls only (the deployed sorter). "workstation" = larger window with the
+# learning UI + catalogue export (for teaching objects). Override at launch
+# with --profile.
+profile = "pi"

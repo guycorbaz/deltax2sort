@@ -44,6 +44,9 @@ export component AppWindow inherits Window {
     // Manual gripper state (operator toggle). Set optimistically on click;
     // failures surface through error-text.
     in property <bool> gripper-on: false;
+    // True in the "workstation" profile: unlocks the learning UI (added in a
+    // later phase). The Pi/kiosk profile leaves it false (sorting only).
+    in property <bool> workstation: false;
 
     callback start-clicked();
     callback stop-clicked();

@@ -29,6 +29,10 @@ struct Args {
     /// Run with simulated robot, conveyor and camera (no hardware needed)
     #[arg(short, long, default_value_t = false)]
     mock: bool,
+
+    /// Operator profile; overrides `[ui].profile` from the config file.
+    #[arg(long, value_enum)]
+    profile: Option<app_config::UiProfile>,
 }
 
 type SharedRobot = Arc<Mutex<Box<dyn RobotController>>>;
@@ -95,6 +99,20 @@ fn log_config_summary(args: &Args, c: &AppConfig) {
     );
 }
 
+/// Apply the operator profile to the window: the Pi keeps the 800x480 kiosk
+/// size from the `.slint`; the workstation gets a larger window and the
+/// `workstation` flag that gates the (future) learning UI.
+fn apply_profile(ui: &AppWindow, profile: app_config::UiProfile) {
+    match profile {
+        app_config::UiProfile::Pi => ui.set_workstation(false),
+        app_config::UiProfile::Workstation => {
+            ui.set_workstation(true);
+            ui.window()
+                .set_size(slint::LogicalSize::new(1280.0, 800.0));
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -108,6 +126,15 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting Delta X2 Sorting System...");
     info!("Configuration loaded from {}.", args.config);
     log_config_summary(&args, &config);
+
+    // A `--profile` flag overrides the config's `[ui].profile`; one binary,
+    // two roles (kiosk sorter vs. teaching workstation).
+    let profile = args.profile.unwrap_or(config.ui.profile);
+    info!(
+        "UI profile: {:?} ({})",
+        profile,
+        if args.profile.is_some() { "from --profile" } else { "from config" }
+    );
 
     let limits = config.robot.workspace_limits();
 
@@ -219,6 +246,7 @@ async fn main() -> anyhow::Result<()> {
     let ui = AppWindow::new()?;
     ui.set_robot_status("Ready (paused)".into());
     ui.set_conveyor_status("Stopped".into());
+    apply_profile(&ui, profile);
     let ui_weak = ui.as_weak();
 
     // Mirror the orchestrator's CONFIRMED state into the UI (never what a

@@ -15,6 +15,27 @@ pub struct AppConfig {
     pub vision: VisionConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+/// Which operator profile the single binary runs as. Selected by config
+/// (`[ui].profile`), overridable by `--profile`. One build, two roles.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+#[clap(rename_all = "lowercase")]
+pub enum UiProfile {
+    /// Deployed sorter: 800x480 touch panel, sorting controls only.
+    #[default]
+    Pi,
+    /// Bigger window for teaching: adds the learning UI and catalogue export.
+    Workstation,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct UiConfig {
+    pub profile: UiProfile,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -243,6 +264,7 @@ impl Default for AppConfig {
             sorting: SortingConfig::default(),
             vision: VisionConfig::default(),
             logging: LoggingConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }
@@ -532,6 +554,20 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.robot.feed_rate = 0; // would emit F0 and stall every move
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn ui_profile_defaults_to_pi_and_parses() {
+        assert_eq!(AppConfig::default().ui.profile, UiProfile::Pi);
+        let cfg: AppConfig = toml::from_str(
+            "[robot]\nport_name=\"/dev/ttyUSB0\"\nbaud_rate=115200\nhome_on_connect=true\n\
+             x_min=-150\nx_max=150\ny_min=-150\ny_max=150\nz_pick=-180\nz_travel=-150\n\
+             [conveyor]\nport_name=\"/dev/ttyUSB1\"\nbaud_rate=115200\ndefault_speed=1000\n\
+             [camera]\ndevice_id=0\nwidth=1280\nheight=720\n\
+             [ui]\nprofile=\"workstation\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.ui.profile, UiProfile::Workstation);
     }
 
     #[test]

@@ -203,6 +203,25 @@ Log levels carry meaning: \cfg{error} marks something needing operator
 attention, \cfg{warn} a recovered or skipped condition, \cfg{info} normal
 lifecycle events, and \cfg{debug} high-volume detail (per-frame vision).
 
+\section{Section \texttt{[ui]}}
+\index{configuration!ui@\texttt{[ui]}}\index{profile}%
+One binary runs in two roles, selected by \cfg{[ui].profile} (overridable at
+launch with \cfg{--profile}):
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    profile & "pi" & \cfg{"pi"}: the deployed sorter --- an 800$\times$480
+      touch panel with sorting controls only. \cfg{"workstation"}: a larger
+      window that also exposes the learning interface and catalogue export,
+      for teaching the system new objects. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[ui]} keys}
+\end{table}
+
 \section{Camera calibration}
 \label{sec:calibration}
 \index{calibration}\index{camera!calibration}\index{coordinate transform}%
