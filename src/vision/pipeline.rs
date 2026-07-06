@@ -183,7 +183,7 @@ impl VisionPipeline {
         let mm_per_px = config.vision.mm_per_px;
         Self {
             detector: BlobDetector::from_config(&config.vision),
-            tracker: Tracker::new(),
+            tracker: Tracker::new(MIN_SEEN_FRAMES),
             transformer: CoordinateTransformer::new(CalibrationParams::centered(
                 width, height, mm_per_px,
             )),
@@ -246,9 +246,9 @@ impl VisionPipeline {
         if let Some(rec) = self.recognizer.as_ref() {
             let label_tx = self.label_tx.as_ref();
             self.tracker
-                .classify_ready_tracks(MIN_SEEN_FRAMES, |rect| recognise(rec, frame, rect, label_tx));
+                .classify_ready_tracks(|rect| recognise(rec, frame, rect, label_tx));
         }
-        let mut ready = self.tracker.take_ready(MIN_SEEN_FRAMES);
+        let mut ready = self.tracker.take_ready();
         for obj in &mut ready {
             let cx = obj.rect.x as f32 + obj.rect.width as f32 / 2.0;
             let cy = obj.rect.y as f32 + obj.rect.height as f32 / 2.0;

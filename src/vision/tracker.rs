@@ -1,5 +1,5 @@
 use super::DetectedObject;
-use log::debug;
+use log::{debug, warn};
 use opencv::core::Rect;
 
 /// One physical object being followed across frames. All geometry is in
@@ -98,10 +98,16 @@ pub struct Tracker {
     /// Tracks unmatched for more than this many consecutive frames are
     /// evicted.
     max_missed_frames: u32,
+    /// Frames a track must be detected in before it is pick-ready — used by
+    /// `take_ready` and to detect objects that crossed the view too briefly.
+    min_seen: u32,
+    /// Running count of objects evicted before reaching `min_seen` and never
+    /// reported: seen too briefly to be picked (fast belt, dropped frames).
+    crossed_unpicked: u64,
 }
 
 impl Tracker {
-    pub fn new() -> Self {
+    pub fn new(min_seen: u32) -> Self {
         Self {
             next_id: 1,
             tracks: Vec::new(),
@@ -112,7 +118,16 @@ impl Tracker {
             min_birth_overlap: 0.5,
             ghost_frames: 30, // ~1 s at 30 fps
             max_missed_frames: 5,
+            min_seen,
+            crossed_unpicked: 0,
         }
+    }
+
+    /// Total objects that crossed the view without ever becoming pick-ready.
+    /// Surfaced via the logs today; wired into the UI stats later (#10).
+    #[allow(dead_code)]
+    pub fn crossed_unpicked(&self) -> u64 {
+        self.crossed_unpicked
     }
 
     /// Ingest one frame's detections. `belt_shift_px` is how far the belt
@@ -195,6 +210,30 @@ impl Tracker {
         // (a long occlusion, e.g. the arm sweeping through view during a pick).
         let max_missed = self.max_missed_frames;
         let ghost_frames = self.ghost_frames;
+        // Count objects that are about to be evicted without ever having been
+        // pickable — seen too few frames (fast belt / dropped frames).
+        let min_seen = self.min_seen;
+        let crossed = self
+            .tracks
+            .iter()
+            .filter(|t| t.missed_frames > max_missed && !t.reported && t.frames_seen < min_seen)
+            .count() as u64;
+        if crossed > 0 {
+            let before = self.crossed_unpicked;
+            self.crossed_unpicked += crossed;
+            debug!(
+                "Tracker: {crossed} object(s) crossed the view unpicked (< {min_seen} frames); total {}",
+                self.crossed_unpicked
+            );
+            // Escalate as the count grows: a steady stream means the belt is too
+            // fast or the frame rate too low for reliable picking.
+            if before / 10 != self.crossed_unpicked / 10 {
+                warn!(
+                    "Tracker: {} objects have crossed the view unpicked — belt too fast or frame rate too low?",
+                    self.crossed_unpicked
+                );
+            }
+        }
         let mut new_ghosts: Vec<Ghost> = self
             .tracks
             .iter()
@@ -277,10 +316,11 @@ impl Tracker {
     /// not been classified yet, caching the class on the track (so an object is
     /// embedded once, and the overlay + the emitted pick both see the class).
     /// `classify(rect)` returns the recognised class name, or `None`.
-    pub fn classify_ready_tracks<F>(&mut self, min_seen: u32, mut classify: F)
+    pub fn classify_ready_tracks<F>(&mut self, mut classify: F)
     where
         F: FnMut(&Rect) -> Option<super::ClassName>,
     {
+        let min_seen = self.min_seen;
         for t in &mut self.tracks {
             if !t.classified && t.missed_frames == 0 && t.frames_seen >= min_seen {
                 t.detected.class = classify(&t.last_rect);
@@ -303,7 +343,8 @@ impl Tracker {
     /// Return every track detected in at least `min_seen` frames that has
     /// not been reported yet, marking it reported. Each physical object is
     /// therefore returned exactly once over its lifetime.
-    pub fn take_ready(&mut self, min_seen: u32) -> Vec<DetectedObject> {
+    pub fn take_ready(&mut self) -> Vec<DetectedObject> {
+        let min_seen = self.min_seen;
         let mut ready = Vec::new();
         for track in &mut self.tracks {
             if !track.reported && track.frames_seen >= min_seen {
@@ -338,7 +379,7 @@ mod tests {
 
     #[test]
     fn a_much_larger_blob_does_not_steal_a_small_tracks_identity() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         tracker.update(vec![detection_sized(100, 100, 20, 20)], 0.0); // small part, id 1
         // A large blob (70x70 = 4900 px² vs 400) whose center is only ~21 px
         // away — well inside the 60 px radius, so distance alone would match —
@@ -356,7 +397,7 @@ mod tests {
 
     #[test]
     fn a_split_blob_does_not_spawn_a_duplicate_track() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         // Frame 1: the object appears whole.
         tracker.update(vec![detection_sized(100, 100, 40, 40)], 0.0);
         // Frame 2: thresholding splits it into two overlapping blobs at the
@@ -374,7 +415,7 @@ mod tests {
 
     #[test]
     fn a_split_at_birth_yields_one_track() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         // Two heavily overlapping blobs the very first frame (a split object).
         tracker.update(
             vec![
@@ -388,7 +429,7 @@ mod tests {
 
     #[test]
     fn adjacent_distinct_parts_stay_separate() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         // Two small parts side by side, not overlapping: legitimately distinct.
         tracker.update(
             vec![
@@ -402,7 +443,7 @@ mod tests {
 
     #[test]
     fn a_moderate_size_change_still_matches_the_same_track() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         tracker.update(vec![detection_sized(100, 100, 20, 20)], 0.0); // 400 px²
         // Grows to 30x30 = 900 px² (ratio 2.25 < 3): still the same object.
         tracker.update(vec![detection_sized(100, 100, 30, 30)], 0.0);
@@ -412,12 +453,12 @@ mod tests {
 
     #[test]
     fn moving_object_keeps_its_id_and_is_reported_once() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         // Belt moves the object 30 px per frame along +y; the tracker
         // predicts that, so matching survives the motion.
         for frame in 0..10 {
             tracker.update(vec![detection_at(100, 100 + 30 * frame)], 30.0);
-            let ready = tracker.take_ready(3);
+            let ready = tracker.take_ready();
             if frame == 2 {
                 assert_eq!(ready.len(), 1, "ready on 3rd sighting");
                 assert_eq!(ready[0].id, 1, "id stable across frames");
@@ -429,31 +470,31 @@ mod tests {
 
     #[test]
     fn flickering_object_is_still_reported_once() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         tracker.update(vec![detection_at(100, 100)], 0.0);
         tracker.update(vec![detection_at(100, 105)], 0.0);
-        assert!(tracker.take_ready(3).is_empty());
+        assert!(tracker.take_ready().is_empty());
         // Missed for 2 frames (within max_missed_frames = 5)...
         tracker.update(vec![], 0.0);
         tracker.update(vec![], 0.0);
         // ...then reappears near the predicted position: same track.
         tracker.update(vec![detection_at(102, 108)], 0.0);
-        let ready = tracker.take_ready(3);
+        let ready = tracker.take_ready();
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, 1);
         tracker.update(vec![detection_at(102, 110)], 0.0);
-        assert!(tracker.take_ready(3).is_empty(), "already reported");
+        assert!(tracker.take_ready().is_empty(), "already reported");
     }
 
     #[test]
     fn reappearance_after_long_occlusion_is_tracked_but_not_re_picked() {
         // #5: an object picked (reported) then occluded long enough to be
         // evicted must NOT be picked again when it reappears.
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         for _ in 0..3 {
             tracker.update(vec![detection_at(100, 100)], 0.0);
         }
-        assert_eq!(tracker.take_ready(3).len(), 1, "first Pick");
+        assert_eq!(tracker.take_ready().len(), 1, "first Pick");
         // Gone for more than max_missed_frames (5): evicted → becomes a ghost.
         for _ in 0..6 {
             tracker.update(vec![], 0.0);
@@ -465,7 +506,7 @@ mod tests {
             tracker.update(vec![detection_at(100, 100)], 0.0);
         }
         assert!(
-            tracker.take_ready(3).is_empty(),
+            tracker.take_ready().is_empty(),
             "the reappearing object must not be picked a second time"
         );
         assert_eq!(tracker.tracks.len(), 1, "it is still tracked (id 2)");
@@ -473,23 +514,53 @@ mod tests {
     }
 
     #[test]
-    fn a_declined_pick_re_arms_the_track_for_re_emission() {
-        let mut tracker = Tracker::new();
+    fn a_fast_crossing_object_is_counted_as_unpicked() {
+        let mut tracker = Tracker::new(3);
+        // Seen only twice (< min_seen), then gone: evicted before pickable.
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        for _ in 0..6 {
+            tracker.update(vec![], 0.0);
+        }
+        assert!(tracker.tracks.is_empty(), "track evicted");
+        assert_eq!(tracker.crossed_unpicked(), 1, "one object crossed unpicked");
+    }
+
+    #[test]
+    fn a_picked_object_is_not_counted_as_a_crossing() {
+        let mut tracker = Tracker::new(3);
         for _ in 0..3 {
             tracker.update(vec![detection_at(100, 100)], 0.0);
         }
-        assert_eq!(tracker.take_ready(3).len(), 1, "first Pick");
-        assert!(tracker.take_ready(3).is_empty(), "not re-emitted on its own");
+        assert_eq!(tracker.take_ready().len(), 1); // reported (picked)
+        for _ in 0..6 {
+            tracker.update(vec![], 0.0); // evicted, but it WAS picked
+        }
+        assert_eq!(
+            tracker.crossed_unpicked(),
+            0,
+            "a picked object is not a missed crossing"
+        );
+    }
+
+    #[test]
+    fn a_declined_pick_re_arms_the_track_for_re_emission() {
+        let mut tracker = Tracker::new(3);
+        for _ in 0..3 {
+            tracker.update(vec![detection_at(100, 100)], 0.0);
+        }
+        assert_eq!(tracker.take_ready().len(), 1, "first Pick");
+        assert!(tracker.take_ready().is_empty(), "not re-emitted on its own");
         // The orchestrator declined the pick (stale in a busy queue): re-arm.
         tracker.rearm(1);
-        let ready = tracker.take_ready(3);
+        let ready = tracker.take_ready();
         assert_eq!(ready.len(), 1, "re-armed track is emitted again");
         assert_eq!(ready[0].id, 1);
     }
 
     #[test]
     fn rearm_of_unknown_or_unreported_track_is_a_noop() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         tracker.rearm(999); // no such track — must not panic
         for _ in 0..2 {
             tracker.update(vec![detection_at(100, 100)], 0.0);
@@ -497,7 +568,7 @@ mod tests {
         tracker.rearm(1); // track exists but is not yet reported → no-op
         tracker.update(vec![detection_at(100, 100)], 0.0);
         assert_eq!(
-            tracker.take_ready(3).len(),
+            tracker.take_ready().len(),
             1,
             "still emits its first pick normally"
         );
@@ -505,11 +576,11 @@ mod tests {
 
     #[test]
     fn a_genuinely_new_object_after_the_ghost_expires_is_picked() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         for _ in 0..3 {
             tracker.update(vec![detection_at(100, 100)], 0.0);
         }
-        assert_eq!(tracker.take_ready(3).len(), 1);
+        assert_eq!(tracker.take_ready().len(), 1);
         for _ in 0..6 {
             tracker.update(vec![], 0.0); // evicted → ghost
         }
@@ -522,7 +593,7 @@ mod tests {
             tracker.update(vec![detection_at(100, 100)], 0.0);
         }
         assert_eq!(
-            tracker.take_ready(3).len(),
+            tracker.take_ready().len(),
             1,
             "after the ghost expires a new object is picked"
         );
@@ -530,7 +601,7 @@ mod tests {
 
     #[test]
     fn missed_track_prediction_accumulates_belt_shift() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         // Belt moves 30 px/frame. Object seen once at y=100, then occluded
         // for 4 frames (belt carries it to y≈250 — far beyond the 60 px
         // match radius of its ORIGINAL position), then reappears there.
@@ -549,19 +620,19 @@ mod tests {
 
     #[test]
     fn ready_tracks_are_classified_once_and_cached() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         let mut calls = 0;
         // Below min_seen: not classified yet.
         tracker.update(vec![detection_at(100, 100)], 0.0);
         tracker.update(vec![detection_at(100, 100)], 0.0);
-        tracker.classify_ready_tracks(3, |_| {
+        tracker.classify_ready_tracks(|_| {
             calls += 1;
             Some("brick".to_string())
         });
         assert_eq!(calls, 0, "not classified before reaching min_seen");
         // Third sighting → ready → classified exactly once.
         tracker.update(vec![detection_at(100, 100)], 0.0);
-        tracker.classify_ready_tracks(3, |_| {
+        tracker.classify_ready_tracks(|_| {
             calls += 1;
             Some("brick".to_string())
         });
@@ -569,7 +640,7 @@ mod tests {
         assert_eq!(tracker.current_overlays()[0].1.as_deref(), Some("brick"));
         // A later frame must NOT re-embed (cached).
         tracker.update(vec![detection_at(100, 100)], 0.0);
-        tracker.classify_ready_tracks(3, |_| {
+        tracker.classify_ready_tracks(|_| {
             calls += 1;
             Some("brick".to_string())
         });
@@ -578,7 +649,7 @@ mod tests {
 
     #[test]
     fn current_overlays_shows_only_tracks_visible_this_frame() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         // Two objects seen this frame → both overlaid.
         tracker.update(vec![detection_at(100, 100), detection_at(300, 300)], 0.0);
         assert_eq!(tracker.current_overlays().len(), 2);
@@ -592,7 +663,7 @@ mod tests {
 
     #[test]
     fn far_detection_is_a_separate_track() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(3);
         tracker.update(vec![detection_at(100, 100)], 0.0);
         // 200 px away: beyond max_match_dist_px (60), must not steal the id.
         tracker.update(vec![detection_at(300, 100)], 0.0);
