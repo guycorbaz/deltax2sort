@@ -60,3 +60,16 @@ invert = true
 # transform; measure it (e.g. a ruler on the belt) and update after any
 # camera height or resolution change.
 mm_per_px = 0.5
+
+[logging]
+# Debug logging to a daily-rotating file (plus the console when to_console).
+# level uses the RUST_LOG grammar: a bare level ("error"/"warn"/"info"/
+# "debug"/"trace") or a per-module filter ("info,deltax2sort=debug" to trace
+# G-code without flooding). A RUST_LOG env var, if set, overrides this.
+level = "info"
+# Directory for the log files (created if missing; git-ignored).
+directory = "logs"
+# Also mirror records to stderr (handy in dev/mock; a kiosk Pi can disable it).
+to_console = true
+# How many rotated daily files to keep; older are pruned. 0 = keep them all.
+keep_days = 7

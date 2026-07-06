@@ -34,15 +34,80 @@ struct Args {
 type SharedRobot = Arc<Mutex<Box<dyn RobotController>>>;
 type SharedConveyor = Arc<Mutex<Box<dyn ConveyorController>>>;
 
+/// Bring up logging to a daily-rotating file (plus stderr when configured).
+/// The returned handle must outlive the program so rotation/flush keep
+/// running. `RUST_LOG`, if set, overrides `logging.level` (so `RUST_LOG=debug`
+/// still traces G-code on demand).
+fn init_logging(cfg: &app_config::LoggingConfig) -> anyhow::Result<flexi_logger::LoggerHandle> {
+    use flexi_logger::{
+        Age, Cleanup, Criterion, Duplicate, FileSpec, Logger, Naming, WriteMode,
+    };
+    let cleanup = if cfg.keep_days == 0 {
+        Cleanup::Never
+    } else {
+        Cleanup::KeepLogFiles(cfg.keep_days as usize)
+    };
+    let mut builder = Logger::try_with_env_or_str(&cfg.level)?
+        .log_to_file(
+            FileSpec::default()
+                .directory(&cfg.directory)
+                .basename("deltax2sort"),
+        )
+        .rotate(Criterion::Age(Age::Day), Naming::Timestamps, cleanup)
+        .append() // continue the same day's file across restarts
+        // Flush every record: a crash mid-run must not lose the tail, which is
+        // exactly what a debugging log is for.
+        .write_mode(WriteMode::Direct);
+    if cfg.to_console {
+        builder = builder.duplicate_to_stderr(Duplicate::All);
+    }
+    Ok(builder.start()?)
+}
+
+/// One-shot startup dump of the effective configuration — the first thing to
+/// check when a log is opened for debugging.
+fn log_config_summary(args: &Args, c: &AppConfig) {
+    info!(
+        "Mode: {} | log level {:?} → {}/",
+        if args.mock { "MOCK" } else { "REAL hardware" },
+        c.logging.level,
+        c.logging.directory
+    );
+    info!(
+        "Robot: port {} @ {} baud, workspace X[{},{}] Y[{},{}] Z[{},{}], z_pick {} z_travel {} feed {} mm/min, home_on_connect {}, release_gripper_on_estop {}",
+        c.robot.port_name, c.robot.baud_rate,
+        c.robot.x_min, c.robot.x_max, c.robot.y_min, c.robot.y_max, c.robot.z_min, c.robot.z_max,
+        c.robot.z_pick, c.robot.z_travel, c.robot.feed_rate, c.robot.home_on_connect,
+        c.robot.release_gripper_on_estop,
+    );
+    info!(
+        "Conveyor: port {} @ {} baud, default_speed {}, speed {} mm/s",
+        c.conveyor.port_name, c.conveyor.baud_rate, c.conveyor.default_speed, c.conveyor.speed_mm_s,
+    );
+    info!(
+        "Camera: device {} {}x{} @ {} fps, fourcc {:?}",
+        c.camera.device_id, c.camera.width, c.camera.height, c.camera.fps, c.camera.fourcc,
+    );
+    info!(
+        "Sorting drop ({}, {}, {}) | Vision: threshold {} area [{},{}] invert {} {} mm/px",
+        c.sorting.drop_x, c.sorting.drop_y, c.sorting.drop_z,
+        c.vision.threshold, c.vision.min_area, c.vision.max_area, c.vision.invert, c.vision.mm_per_px,
+    );
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
-    info!("Starting Delta X2 Sorting System...");
-
     let args = Args::parse();
     let config = AppConfig::load(&args.config)
         .with_context(|| format!("loading configuration from {}", args.config))?;
+
+    // Logging comes up as soon as the config is known — it drives the level,
+    // file directory and rotation. Hold the handle for the whole run so the
+    // background rotation/flush keeps working.
+    let _logger = init_logging(&config.logging).context("initialising logging")?;
+    info!("Starting Delta X2 Sorting System...");
     info!("Configuration loaded from {}.", args.config);
+    log_config_summary(&args, &config);
 
     let limits = config.robot.workspace_limits();
 

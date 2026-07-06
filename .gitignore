@@ -1,6 +1,9 @@
 # Rust
 /target
 
+# Runtime debug logs (daily-rotating, written by flexi_logger)
+/logs/
+
 # LaTeX build artifacts (manual.pdf itself is committed)
 docs/*.aux
 docs/*.fdb_latexmk

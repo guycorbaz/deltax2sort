@@ -142,6 +142,38 @@ time. Calibration is always based on the effective resolution.
   \caption{\cfg{[vision]} keys}
 \end{table}
 
+\section{Section \texttt{[logging]}}
+\index{configuration!logging@\texttt{[logging]}}\index{logging}\index{log file}%
+The application writes a debug log to a daily-rotating file and, by default,
+mirrors it to the console. The whole section is optional --- omit it and the
+defaults below apply.
+\begin{table}[h]
+  \centering
+  \begin{tabularx}{\textwidth}{KTD}
+    \toprule
+    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \midrule
+    level & "info" & Verbosity in the \cfg{RUST\_LOG} grammar: a bare level
+      (\cfg{error}/\cfg{warn}/\cfg{info}/\cfg{debug}/\cfg{trace}) or a
+      per-module filter such as \cfg{"info,deltax2sort=debug"} to trace G-code
+      without flooding. A \cfg{RUST\_LOG} environment variable, if set,
+      overrides this at startup. \\
+    directory & "logs" & Directory the log files are written to (created if
+      absent). One file per day; the current file is
+      \cfg{deltax2sort\_rCURRENT.log}. \\
+    to\_console & true & Also print records to \texttt{stderr}. Useful in
+      development and mock runs; a pure kiosk can set it \cfg{false}. \\
+    keep\_days & 7 & How many rotated daily files to keep; older ones are
+      pruned automatically. \cfg{0} keeps them all (watch disk on the Pi). \\
+    \bottomrule
+  \end{tabularx}
+  \caption{\cfg{[logging]} keys}
+\end{table}
+
+Log levels carry meaning: \cfg{error} marks something needing operator
+attention, \cfg{warn} a recovered or skipped condition, \cfg{info} normal
+lifecycle events, and \cfg{debug} high-volume detail (per-frame vision).
+
 \section{Camera calibration}
 \label{sec:calibration}
 \index{calibration}\index{camera!calibration}\index{coordinate transform}%
@@ -195,4 +227,10 @@ min_area = 500.0
 max_area = 10000.0
 invert = true
 mm_per_px = 0.5
+
+[logging]
+level = "info"
+directory = "logs"
+to_console = true
+keep_days = 7
 \end{lstlisting}

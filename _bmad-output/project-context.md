@@ -73,8 +73,11 @@ or bump a dependency unless explicitly asked.
   generated code; change the `.slint` file instead.
 - **anyhow** (backtrace feature; needs `RUST_BACKTRACE=1` at runtime) — the only
   error style: no thiserror/eyre, no custom error enums.
-- **log + env_logger** — the only logging: do NOT introduce tracing.
-  `RUST_LOG=debug` traces G-code.
+- **log + flexi_logger** — the only logging: do NOT introduce tracing. Init is
+  in `main::init_logging` from the `[logging]` config (daily-rotating file in
+  `logs/`, optional stderr mirror, `keep_days` retention). Keep the `log`
+  facade (`info!/warn!/…`) everywhere; `RUST_LOG` overrides `logging.level` and
+  `RUST_LOG=debug` still traces G-code. (env_logger was replaced 2026-07-06.)
 - **Zero dev-dependencies** — the test seam is the hardware traits + `--mock`;
   do not add mockall/proptest.
 - **Linux-only by design** (libudev, `dialout` group, `/dev/tty*` paths). No

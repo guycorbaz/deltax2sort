@@ -357,6 +357,7 @@ fn send_and_wait_feedback(
         // mid-command surfaces within one read window instead of after the
         // full 30 s deadline, letting Home/Pause/Resume proceed promptly.
         if cancel.load(Ordering::SeqCst) {
+            warn!("DeltaX2: '{}' aborted by emergency stop (feedback wait cut short)", cmd);
             return Err(anyhow!("'{}' aborted by emergency stop", cmd));
         }
         if Instant::now() >= deadline {

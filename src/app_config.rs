@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub sorting: SortingConfig,
     #[serde(default)]
     pub vision: VisionConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -92,6 +94,36 @@ pub struct VisionConfig {
     /// pixel→robot transform (`CalibrationParams::centered`).
     #[serde(default = "default_mm_per_px")]
     pub mm_per_px: f32,
+}
+
+/// Logging to a daily-rotating file (for debugging) plus, optionally, the
+/// console. Backed by flexi_logger; the `log` macros elsewhere are unchanged.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct LoggingConfig {
+    /// Level spec in the `RUST_LOG` grammar — a bare level (`"info"`,
+    /// `"debug"`) or a per-module filter (`"info,deltax2sort=debug"`). A
+    /// `RUST_LOG` environment variable, if set, overrides this at startup.
+    pub level: String,
+    /// Directory the log files are written to (created if absent).
+    pub directory: String,
+    /// Also mirror log records to stderr (handy in dev / mock; a pure kiosk
+    /// can turn it off).
+    pub to_console: bool,
+    /// How many rotated daily files to keep; older ones are pruned. 0 keeps
+    /// them all (watch disk on the Pi).
+    pub keep_days: u16,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            directory: "logs".to_string(),
+            to_console: true,
+            keep_days: 7,
+        }
+    }
 }
 
 fn default_z_min() -> f32 {
@@ -181,6 +213,7 @@ impl Default for AppConfig {
             },
             sorting: SortingConfig::default(),
             vision: VisionConfig::default(),
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -314,6 +347,19 @@ impl AppConfig {
             v.min_area < v.max_area,
             "vision.min_area must be < vision.max_area"
         );
+        let lg = &self.logging;
+        ensure!(
+            !lg.directory.trim().is_empty(),
+            "logging.directory must not be empty"
+        );
+        // Catch a typo'd level spec at startup rather than silently logging
+        // nothing (or panicking inside the logger).
+        ensure!(
+            flexi_logger::LogSpecification::parse(&lg.level).is_ok(),
+            "logging.level is not a valid RUST_LOG spec (e.g. \"info\" or \
+             \"info,deltax2sort=debug\"): {:?}",
+            lg.level
+        );
         Ok(())
     }
 }
@@ -395,6 +441,31 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.robot.feed_rate = 0; // would emit F0 and stall every move
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn logging_defaults_are_sane() {
+        let lg = AppConfig::default().logging;
+        assert_eq!(lg.level, "info");
+        assert_eq!(lg.directory, "logs");
+        assert!(lg.to_console);
+        assert_eq!(lg.keep_days, 7);
+    }
+
+    #[test]
+    fn validate_rejects_bad_logging_level_and_empty_directory() {
+        let mut cfg = AppConfig::default();
+        cfg.logging.level = "not a level".to_string();
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = AppConfig::default();
+        cfg.logging.directory = "   ".to_string();
+        assert!(cfg.validate().is_err());
+
+        // A per-module spec (used to trace G-code) stays valid.
+        let mut cfg = AppConfig::default();
+        cfg.logging.level = "info,deltax2sort=debug".to_string();
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

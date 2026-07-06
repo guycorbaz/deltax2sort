@@ -15,7 +15,7 @@ cargo build                 # Build (compiles ui/app_window.slint via build.rs)
 cargo test                  # Unit tests: config validation, calibration, planner, limits, queue
 cargo run -- --mock         # Run with mock robot/conveyor/camera (no hardware needed)
 cargo run                   # Run against real hardware (serial ports + camera)
-RUST_LOG=info cargo run -- --mock             # env_logger; use RUST_LOG=debug for G-code tracing
+RUST_LOG=debug cargo run -- --mock            # RUST_LOG overrides [logging].level (debug traces G-code)
 cd docs && latexmk -pdf manual.tex   # Build the operations manual (PDF)
 ```
 
@@ -34,7 +34,7 @@ Three layers wired together in `src/main.rs` (hardware init, Slint UI callbacks,
 2. The E-stop path must stay preemptive: `EmergencyStop` handles own *cloned* serial ports (`try_clone`) and are triggered synchronously from the UI callback, bypassing the tokio mutexes and the orchestrator queue. Robot halt is `M112`, conveyor halt `M5`. When `robot.release_gripper_on_estop` is set, the robot halt write is `M05\nM112` (gripper opens as part of the same preemptive write, before the halt) — keep any gripper release on the E-stop path fire-and-forget like this; never a blocking `set_gripper` after `M112` (it would wait out the 30 s feedback deadline and stall Home recovery).
 3. `DeltaX2::write_gcode` appends a unique `FEEDBACK:sync_<n>` id and blocks until the echo (= physical completion), with EOF detection and a 30 s overall deadline. Don't reintroduce unbounded waits. The feedback wait also polls a shared `estop_flag` (`AtomicBool`): the E-stop handles/`stop()` raise it so a command in flight when `M112` fires aborts within one serial read window instead of burning the 30 s deadline; `home()` clears it before `G28` (the one command the firmware accepts after `M112`). Keep this: don't let a non-`home` command clear the flag, or recovery could stall again.
 
-Configuration lives in `Settings.toml` (`src/app_config.rs`): `[robot]` (ports, workspace, z_pick/z_travel, feed_rate), `[conveyor]` (port, default_speed raw S-value, signed speed_mm_s), `[camera]`, `[sorting]` (drop position), `[vision]` (threshold/areas/invert). New fields need serde defaults so old config files keep parsing (there's a test for that).
+Configuration lives in `Settings.toml` (`src/app_config.rs`): `[robot]` (ports, workspace, z_pick/z_travel, feed_rate), `[conveyor]` (port, default_speed raw S-value, signed speed_mm_s), `[camera]`, `[sorting]` (drop position), `[vision]` (threshold/areas/invert), `[logging]` (level/directory/to_console/keep_days — daily-rotating file log via flexi_logger, set up in `main::init_logging`). New fields need serde defaults so old config files keep parsing (there's a test for that).
 
 ## Delta X2 protocol
 
