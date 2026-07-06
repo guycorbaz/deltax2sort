@@ -26,6 +26,15 @@ export component AppWindow inherits Window {
     // True while a conveyor command is in flight. Debounces the Start/Pause
     // toggle: a double-tap can't spawn a second, racing command.
     in property <bool> command-pending: false;
+    // Confirmed orchestrator "actively sorting" state, mirrored from the
+    // orchestrator's state watch (robot business, NOT the conveyor). Used to
+    // gate Home so it is offered only when homing is meaningful.
+    in property <bool> orchestrator-running: false;
+    // A Home was requested and has not yet been confirmed complete. Set
+    // optimistically on click (like `command-pending` for the belt); cleared
+    // when the orchestrator publishes its next confirmed state. Gives the
+    // operator immediate feedback and blocks a confusing double-tap.
+    in property <bool> home-pending: false;
     // Last hardware error shown to the operator ("" = none). While set, Stop
     // stays available so the belt can be forced down after a failed command.
     in property <string> error-text: "";
@@ -179,10 +188,15 @@ export component AppWindow inherits Window {
                     }
 
                     Button {
-                        text: "Home Robot";
+                        text: home-pending ? "Homing…" : "Home Robot";
                         min-height: 48px;
-                        // Always available: homing is the recovery action
-                        // that clears the E-stopped state.
+                        // Gated on robot business (the confirmed orchestrator
+                        // state), never the conveyor: available while paused or
+                        // E-stopped — homing is the action that clears the
+                        // E-stop interlock — but disabled while actively sorting
+                        // (Pause first, so Home can't preempt a live pick) and
+                        // while a home is already in progress.
+                        enabled: !orchestrator-running && !home-pending;
                         clicked => {
                             root.home-clicked();
                         }

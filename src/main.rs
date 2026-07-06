@@ -157,17 +157,26 @@ async fn main() -> anyhow::Result<()> {
                 let ui_handle2 = ui_handle.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle2.upgrade() {
+                        // Any confirmed transition means a pending Home (if
+                        // any) has been carried out: the run loop always
+                        // publishes state after executing Home. Clearing it
+                        // here retires the "Homing…" feedback exactly once the
+                        // action is real, not when the button was tapped.
+                        ui.set_home_pending(false);
                         match state {
                             OrchestratorState::Paused => {
                                 ui.set_estopped(false);
+                                ui.set_orchestrator_running(false);
                                 ui.set_robot_status("Ready (paused)".into());
                             }
                             OrchestratorState::Running => {
                                 ui.set_estopped(false);
+                                ui.set_orchestrator_running(true);
                                 ui.set_robot_status("Sorting".into());
                             }
                             OrchestratorState::EStopped => {
                                 ui.set_estopped(true);
+                                ui.set_orchestrator_running(false);
                                 ui.set_is_running(false);
                                 ui.set_robot_status("E-STOP — HOME REQUIRED".into());
                             }
@@ -326,17 +335,21 @@ async fn main() -> anyhow::Result<()> {
         let ui_handle = ui_weak.clone();
         ui.on_home_clicked(move || {
             info!("UI: Home requested");
-            // Clear any stale banner: the operator is taking a recovery action.
-            if let Some(ui) = ui_handle.upgrade() {
-                ui.set_error_text("".into());
-            }
-            // Dedicated recovery message: runs even while paused and clears
-            // the E-stopped state on success.
+            // Dedicated recovery message: runs with priority even while paused
+            // and clears the E-stopped state on success.
             if tx.send(OrchestratorMsg::Home).is_err() {
                 error!("UI: orchestrator is gone; cannot home");
                 if let Some(ui) = ui_handle.upgrade() {
                     ui.set_error_text("Cannot home: controller is gone".into());
                 }
+                return;
+            }
+            // Immediate feedback: show "Homing…" and lock the button until the
+            // orchestrator confirms completion (state watch clears it). Also
+            // clear any stale banner — the operator is taking a recovery action.
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.set_home_pending(true);
+                ui.set_error_text("".into());
             }
         });
     }

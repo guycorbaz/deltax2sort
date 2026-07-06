@@ -79,7 +79,10 @@ retries every 500~ms without affecting robot control.
       while running). \\
     Home Robot & Homes the robot with priority — it runs even while the
       orchestrator is paused, and a successful homing is what clears the
-      E-stop lockout. Always enabled. \\
+      E-stop lockout. Available while paused or E-stopped, and disabled while
+      actively sorting (pause first, so a home cannot preempt a live pick).
+      Once pressed it shows \emph{Homing\ldots} and is locked until the
+      orchestrator confirms the home is done. \\
     Engage / Release Gripper & Manually opens or closes the gripper. A
       recovery/maintenance action --- runs even while paused so a part held
       after a failed pick or an emergency stop can be released by hand ---
