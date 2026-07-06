@@ -16,18 +16,67 @@ use tokio::sync::{mpsc, watch};
 /// so accumulated latency can never lie to the operator about belt position.
 pub type FrameImage = SharedPixelBuffer<Rgb8Pixel>;
 
+/// Side of the square thumbnail sent to the learning UI for an unknown object.
+const THUMB_PX: u32 = 128;
+/// How many nearest known classes to offer the operator for an unknown object.
+const LEARN_CANDIDATES: usize = 5;
+
+/// An unrecognised object surfaced to the workstation learning UI: a crop
+/// thumbnail to show, its embedding (so the operator's label can be added to
+/// the catalogue), and the nearest known classes to offer as choices.
+#[derive(Clone)]
+pub struct LabelRequest {
+    // Read by the workstation labelling panel (C2); the C1 consumer only logs
+    // the candidate classes.
+    #[allow(dead_code)]
+    pub thumbnail: FrameImage,
+    #[allow(dead_code)]
+    pub embedding: Vec<f32>,
+    pub nearest: Vec<(ClassName, f32)>,
+}
+
 /// Recognise the object in `rect` of `frame`: crop, embed, nearest-neighbour.
-/// A failure (bad ROI, inference error) logs and yields `None` rather than
-/// aborting the frame — a missed classification just leaves the object
-/// unrecognised (and unsorted), never crashes the loop.
-fn classify_roi(rec: &Recognizer, frame: &Mat, rect: &Rect) -> Option<ClassName> {
-    match crop_roi(frame, rect).and_then(|roi| rec.classify(&roi)) {
-        Ok(class) => class,
+/// When it is unrecognised and a learning sink is present (workstation), push a
+/// [`LabelRequest`] so the operator can teach it. A failure (bad ROI, inference
+/// error) logs and yields `None` rather than aborting the frame.
+fn recognise(
+    rec: &Recognizer,
+    frame: &Mat,
+    rect: &Rect,
+    label_tx: Option<&watch::Sender<Option<LabelRequest>>>,
+) -> Option<ClassName> {
+    let crop = match crop_roi(frame, rect) {
+        Ok(c) => c,
         Err(e) => {
-            warn!("Vision: recognition failed for a track: {e:#}");
-            None
+            warn!("Vision: could not crop object for recognition: {e:#}");
+            return None;
+        }
+    };
+    let embedding = match rec.embed(&crop) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Vision: embedding failed for a track: {e:#}");
+            return None;
+        }
+    };
+    let (class, _sim) = rec.classify_embedding(&embedding);
+    if class.is_none() {
+        // Unrecognised: offer it to the workstation to label. Latest-wins.
+        if let Some(tx) = label_tx {
+            match mat_to_frame_image(&crop, THUMB_PX, THUMB_PX) {
+                Ok(thumbnail) => {
+                    let nearest = rec.nearest(&embedding, LEARN_CANDIDATES);
+                    let _ = tx.send(Some(LabelRequest {
+                        thumbnail,
+                        embedding,
+                        nearest,
+                    }));
+                }
+                Err(e) => warn!("Vision: could not build learning thumbnail: {e:#}"),
+            }
         }
     }
+    class
 }
 
 /// Clamp `rect` to the frame and return an owned crop. Detections can sit
@@ -122,6 +171,9 @@ pub struct VisionPipeline {
     /// Object recogniser, when `[recognition]` is enabled and a model loaded.
     /// `None` = recognition off: every object stays unrecognised (unsorted).
     recognizer: Option<Recognizer>,
+    /// Latest-wins sink for unrecognised objects, so the workstation can teach
+    /// them. `None` in the Pi profile (no learning UI).
+    label_tx: Option<watch::Sender<Option<LabelRequest>>>,
 }
 
 impl VisionPipeline {
@@ -138,12 +190,18 @@ impl VisionPipeline {
             belt_speed_mm_s: config.conveyor.speed_mm_s,
             mm_per_px,
             recognizer: None,
+            label_tx: None,
         }
     }
 
     /// Attach a recogniser (called once, at startup, when recognition is on).
     pub fn set_recognizer(&mut self, recognizer: Recognizer) {
         self.recognizer = Some(recognizer);
+    }
+
+    /// Route unrecognised objects to the learning UI (workstation profile).
+    pub fn set_label_sink(&mut self, label_tx: watch::Sender<Option<LabelRequest>>) {
+        self.label_tx = Some(label_tx);
     }
 
     /// Process one frame captured `dt` after the previous one, at
@@ -180,8 +238,9 @@ impl VisionPipeline {
         // before the mutable tracker borrow so the two disjoint fields don't
         // conflict.
         if let Some(rec) = self.recognizer.as_ref() {
+            let label_tx = self.label_tx.as_ref();
             self.tracker
-                .classify_ready_tracks(MIN_SEEN_FRAMES, |rect| classify_roi(rec, frame, rect));
+                .classify_ready_tracks(MIN_SEEN_FRAMES, |rect| recognise(rec, frame, rect, label_tx));
         }
         let mut ready = self.tracker.take_ready(MIN_SEEN_FRAMES);
         for obj in &mut ready {
@@ -235,6 +294,10 @@ impl VisionPipeline {
 /// released as the task returns). OpenCV work runs inside `spawn_blocking`;
 /// the pipeline moves in and out each iteration (`Mat` and the pipeline are
 /// `Send`).
+// A wiring point: it threads the camera, config and the several one-way
+// channels into one task. Grouping them into a struct would only add
+// indirection.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_vision_loop(
     mut camera: Box<dyn CameraDriver>,
     config: &AppConfig,
@@ -244,23 +307,24 @@ pub fn spawn_vision_loop(
     // Latest-wins sink for the live feed. The UI reads only the newest frame,
     // so a slow consumer drops stale frames instead of building a backlog.
     frame_tx: watch::Sender<Option<FrameImage>>,
+    // Recognition, when enabled (loaded by main so it can share the catalogue
+    // handle with the learning UI). None = recognition off.
+    recognizer: Option<Recognizer>,
+    // Learning sink for unrecognised objects (workstation profile only).
+    label_tx: Option<watch::Sender<Option<LabelRequest>>>,
 ) -> tokio::task::JoinHandle<()> {
     let (width, height) = camera.resolution();
     let mm_per_px = config.vision.mm_per_px;
     let mut pipeline = VisionPipeline::new(config, width, height);
-
-    // Attach the recogniser if enabled; a load failure disables recognition
-    // (objects stay unrecognised → unsorted) rather than aborting startup.
-    if config.recognition.enabled {
-        match Recognizer::load(&config.recognition) {
-            Ok(rec) => {
-                info!(
-                    "Vision: recognition enabled ({} class(es) in the catalogue)",
-                    rec.class_count()
-                );
-                pipeline.set_recognizer(rec);
-            }
-            Err(e) => warn!("Vision: recognition disabled — {e:#}"),
+    if let Some(rec) = recognizer {
+        info!(
+            "Vision: recognition enabled ({} class(es) in the catalogue)",
+            rec.class_count()
+        );
+        pipeline.set_recognizer(rec);
+        if let Some(tx) = label_tx {
+            info!("Vision: learning enabled (unrecognised objects go to the labelling UI)");
+            pipeline.set_label_sink(tx);
         }
     }
 

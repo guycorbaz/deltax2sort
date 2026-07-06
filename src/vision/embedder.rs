@@ -10,7 +10,13 @@ use log::info;
 use opencv::core::{Mat, Size};
 use opencv::{imgproc, prelude::*};
 use std::path::Path;
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use tract_onnx::prelude::*;
+
+/// Shared handle to the learned catalogue: the vision loop reads it (classify)
+/// while the learning UI writes to it (teach). A std mutex is fine — contention
+/// is negligible (teaching is a rare operator action).
+pub type SharedCatalog = Arc<StdMutex<Catalog>>;
 
 /// ImageNet normalisation — must match `models/export_embedder.py` exactly.
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
@@ -81,11 +87,11 @@ fn preprocess(crop: &Mat, size: i32) -> Result<Vec<f32>> {
     Ok(data)
 }
 
-/// The full recogniser: an embedder plus the learned catalogue and the match
-/// threshold. Built only when `[recognition].enabled`.
+/// The full recogniser: an embedder plus the (shared) learned catalogue and
+/// the match threshold. Built only when `[recognition].enabled`.
 pub struct Recognizer {
     embedder: OnnxEmbedder,
-    catalog: Catalog,
+    catalog: SharedCatalog,
     threshold: f32,
 }
 
@@ -106,20 +112,40 @@ impl Recognizer {
         };
         Ok(Self {
             embedder,
-            catalog,
+            catalog: Arc::new(StdMutex::new(catalog)),
             threshold: cfg.match_threshold,
         })
     }
 
-    pub fn class_count(&self) -> usize {
-        self.catalog.classes().len()
+    /// A clone of the shared catalogue handle, so the learning UI can teach
+    /// (add examples) the same catalogue the vision loop classifies against.
+    pub fn catalog_handle(&self) -> SharedCatalog {
+        self.catalog.clone()
     }
 
-    /// Recognise the object in a BGR crop, or `None` if no catalogue class is
-    /// similar enough (the object is then left unsorted).
-    pub fn classify(&self, crop: &Mat) -> Result<Option<ClassName>> {
-        let embedding = self.embedder.embed(crop)?;
-        Ok(self.catalog.classify(&embedding, self.threshold).0)
+    fn lock(&self) -> std::sync::MutexGuard<'_, Catalog> {
+        self.catalog.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn class_count(&self) -> usize {
+        self.lock().classes().len()
+    }
+
+    /// Embed a BGR object crop into its feature vector.
+    pub fn embed(&self, crop: &Mat) -> Result<Vec<f32>> {
+        self.embedder.embed(crop)
+    }
+
+    /// Nearest catalogue class to `embedding` above the match threshold, else
+    /// `None`. Second element is the cosine similarity (confidence).
+    pub fn classify_embedding(&self, embedding: &[f32]) -> (Option<ClassName>, f32) {
+        self.lock().classify(embedding, self.threshold)
+    }
+
+    /// The `n` most similar catalogue classes to `embedding` — the candidates
+    /// the learning UI offers for an unrecognised object.
+    pub fn nearest(&self, embedding: &[f32], n: usize) -> Vec<(ClassName, f32)> {
+        self.lock().nearest(embedding, n)
     }
 }
 

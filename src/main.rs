@@ -230,9 +230,34 @@ async fn main() -> anyhow::Result<()> {
     // frame is rendered.
     let (frame_tx, frame_rx) = tokio::sync::watch::channel::<Option<vision::pipeline::FrameImage>>(None);
 
+    // Recognition is loaded here (not inside the vision loop) so the catalogue
+    // handle can later be shared with the learning UI. Disabled → None.
+    let recognizer = if config.recognition.enabled {
+        match vision::embedder::Recognizer::load(&config.recognition) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                warn!("Recognition disabled: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Learning: only in the workstation profile, and only with recognition on.
+    // Unrecognised objects flow here for the operator to label (latest-wins).
+    let learning = profile == app_config::UiProfile::Workstation && recognizer.is_some();
+    let (label_tx, label_rx) = if learning {
+        let (tx, rx) =
+            tokio::sync::watch::channel::<Option<vision::pipeline::LabelRequest>>(None);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
     // --- Vision loop: owns the camera, feeds pick-ready objects to the
-    // orchestrator (camera → detect → track → pixel-to-world → Pick) and
-    // publishes the annotated frame for the UI ---
+    // orchestrator (camera → detect → track → recognise → pixel-to-world →
+    // Pick) and publishes the annotated frame for the UI ---
     let vision_handle = vision::pipeline::spawn_vision_loop(
         camera,
         &config,
@@ -240,7 +265,33 @@ async fn main() -> anyhow::Result<()> {
         shutdown_rx,
         belt_running_rx,
         frame_tx,
+        recognizer,
+        label_tx,
     );
+
+    // Learning consumer (C1): log each unrecognised object and its nearest
+    // known classes. The workstation labelling panel replaces this in C2.
+    if let Some(mut label_rx) = label_rx {
+        tokio::spawn(async move {
+            loop {
+                let request = label_rx.borrow_and_update().clone();
+                if let Some(req) = request {
+                    let nearest: Vec<String> = req
+                        .nearest
+                        .iter()
+                        .map(|(c, s)| format!("{c} {:.0}%", s * 100.0))
+                        .collect();
+                    info!(
+                        "Learning: unrecognised object — nearest known: [{}]",
+                        nearest.join(", ")
+                    );
+                }
+                if label_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
     // --- UI ---
     let ui = AppWindow::new()?;
