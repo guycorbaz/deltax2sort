@@ -2,12 +2,15 @@
 
 \section{Purpose}
 \index{Delta X2 robot}\index{sorting}%
-The Delta X2 LEGO Sorting System is a Rust application that drives a
-Delta~X2 delta robot to pick LEGO bricks from a moving conveyor belt and
-sort them into bins. A USB camera watches the belt upstream of the robot;
-a vision pipeline detects bricks, converts their pixel positions into
-robot coordinates, and an orchestrator schedules pick-and-place moves that
-are executed as G-code over a serial connection.
+The Delta X2 Parts Sorting System is a Rust application that drives a
+Delta~X2 delta robot to pick small parts --- LEGO bricks, screws, nuts and
+similar objects --- from a moving conveyor belt and sort them into bins.
+LEGO bricks are the first use case; the vision and classification pipeline
+is meant to be retargeted to other small parts by teaching new object
+classes, not by changing code. A USB camera watches the belt upstream of
+the robot; a vision pipeline detects parts, converts their pixel positions
+into robot coordinates, and an orchestrator schedules pick-and-place moves
+that are executed as G-code over a serial connection.
 
 \section{Hardware components}
 \index{hardware!components}\index{conveyor}\index{camera}\index{gripper}%

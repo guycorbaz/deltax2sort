@@ -1,7 +1,7 @@
-# Delta X LEGO Sorting Robot - System Specifications
+# Delta X Parts Sorting Robot - System Specifications
 
 ## 1. System Overview
-The system consists of a Delta X robot arm, a conveyor belt, and a USB camera. The goal is to sort LEGO bricks into 4 distinct categories based on color and/or shape. Unknown items will pass through the conveyor to a reject/overflow container. The control application will be written in Rust with a Slint GUI.
+The system consists of a Delta X robot arm, a conveyor belt, and a USB camera. The goal is to sort small parts — LEGO bricks, screws, nuts and similar objects — into distinct categories based on color and/or shape. LEGO bricks are the first use case; the pipeline is meant to be retargeted to other small parts by teaching new object classes. Unknown items pass through the conveyor to a reject/overflow container. The control application will be written in Rust with a Slint GUI.
 
 ## 2. Hardware Interfaces
 
@@ -44,7 +44,7 @@ The application will be multi-threaded/async to handle real-time vision and robo
 - **Human-in-the-Loop**:
     -   Operator can view "Unknown" images in UI.
     -   Operator assigns Label (e.g., "3001 - 2x4 Brick Red").
-    -   **Standardization**: Integrate with **Rebrickable/BrickLink** Part IDs to standardize naming.
+    -   **Standardization** (LEGO use case): optionally integrate with **Rebrickable/BrickLink** Part IDs to standardize naming; other domains use their own labels.
     -   System retrains or updates reference database.
 
 ### 3.2 Robot Control Subsystem
@@ -52,7 +52,7 @@ The application will be multi-threaded/async to handle real-time vision and robo
 - **Queue**: Receive `PickTask`s and execute moves.
 - **Performance**:
     -   Target **Picks Per Minute (PPM)**: Optimization for high throughput.
-    -   **Look-ahead**: Scheduler should optimize pathing to assume future positions of multiple bricks.
+    -   **Look-ahead**: Scheduler should optimize pathing to assume future positions of multiple parts.
 - **Logic**:
     1.  Move to `PickPosition` (calculated from Vision + **Visual Odometry** for belt speed compensation).
     2.  Actuate Gripper (Suction on).
@@ -71,14 +71,14 @@ The application will be multi-threaded/async to handle real-time vision and robo
 ### 3.4 User Interface (Slint)
 - **Live View**:
     -   **Video Feed**: Real-time display of the conveyor belt.
-    -   **Overlays**: Draw **GREEN** bounding boxes around recognized/sortable bricks. Draw **RED** or **YELLOW** boxes around unknown items.
+    -   **Overlays**: Draw **GREEN** bounding boxes around recognized/sortable parts. Draw **RED** or **YELLOW** boxes around unknown items.
 - **Status Dashboard**:
     -   Robot Status (Idle/Busy/Alarm).
     -   Conveyor Status.
     -   Counts per category.
 - **Sorting Session Config**:
-    -   **Batch Setup**: Select between 1 and 6 Lego types to sort in the current run.
-    -   **Assignment**: Map "Lego Type A (Part #3001)" -> "Position 1".
+    -   **Batch Setup**: Select between 1 and 6 part types to sort in the current run.
+    -   **Assignment**: Map "Part Type A" -> "Position 1".
 - **Learning Interface**:
     -   **Notification**: "Unknown Object Detected".
     -   **Labeling Tool**: Show cropped image, ask user to select category or create new one (Searchable by BrickLink ID).
@@ -100,4 +100,4 @@ The application will be multi-threaded/async to handle real-time vision and robo
 1.  **Conveyor Control**: Is the conveyor plugged into the Robot's control box (Aux port), or is it a separate USB device? If separate, what is the protocol?
 2.  **Gripper**: Is it a suction cup (Air Pump)? How is it triggered? (Usually `M3`/`M5` or digital IO).
 3.  **Camera**: Do you have a specific camera model? (Standard UVC is assumed).
-4.  **Sorting Criteria**: Simple color blobs, or do we need ML/Shape matching for specific LEGO shapes (e.g. 2x4 vs 2x2)?
+4.  **Sorting Criteria**: Simple color blobs, or do we need ML/Shape matching for specific part shapes (e.g. LEGO 2x4 vs 2x2, screw sizes)?
