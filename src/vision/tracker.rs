@@ -62,11 +62,27 @@ fn overlap_coeff(a: &Rect, b: &Rect) -> f32 {
     }
 }
 
+/// A recently evicted track that had already been reported (its Pick emitted).
+/// Kept briefly, drifting with the belt, so the same object reappearing after a
+/// long occlusion (e.g. the arm sweeping through view during a pick) is tracked
+/// again WITHOUT emitting a second Pick.
+struct Ghost {
+    center: (f32, f32),
+    area: f32,
+    /// Frames left before this ghost is forgotten.
+    ttl: u32,
+}
+
 /// Multi-frame object tracker: greedy nearest-neighbour matching of
 /// detections to active tracks, with belt-motion prediction along pixel +y.
 pub struct Tracker {
     next_id: u64,
     tracks: Vec<TrackedObject>,
+    /// Recently evicted, already-reported tracks — see [`Ghost`].
+    ghosts: Vec<Ghost>,
+    /// How many frames a ghost is remembered (a bit longer than a pick, so an
+    /// object occluded for the whole pick is still recognised on reappearance).
+    ghost_frames: u32,
     /// Max distance (px) between a detection center and a track's predicted
     /// center to still count as the same object.
     max_match_dist_px: f32,
@@ -89,10 +105,12 @@ impl Tracker {
         Self {
             next_id: 1,
             tracks: Vec::new(),
+            ghosts: Vec::new(),
             // Tuning constants; move to config if field experience demands.
             max_match_dist_px: 60.0,
             max_area_ratio: 3.0,
             min_birth_overlap: 0.5,
+            ghost_frames: 30, // ~1 s at 30 fps
             max_missed_frames: 5,
         }
     }
@@ -100,6 +118,14 @@ impl Tracker {
     /// Ingest one frame's detections. `belt_shift_px` is how far the belt
     /// moved objects along pixel +y since the previous frame (signed).
     pub fn update(&mut self, detections: Vec<DetectedObject>, belt_shift_px: f32) {
+        // Age ghosts of recently-picked objects: drift them with the belt and
+        // forget the expired ones.
+        for g in &mut self.ghosts {
+            g.center.1 += belt_shift_px;
+            g.ttl = g.ttl.saturating_sub(1);
+        }
+        self.ghosts.retain(|g| g.ttl > 0);
+
         // Predicted center of each active track: its (already belt-advanced)
         // center moved by this frame's belt motion.
         let predicted: Vec<(f32, f32)> = self
@@ -164,7 +190,22 @@ impl Tracker {
                 self.tracks[ti].center.1 += belt_shift_px;
             }
         }
+        // Evict tracks missed too long. A track that was already reported
+        // becomes a ghost, so its object is not re-picked if it reappears
+        // (a long occlusion, e.g. the arm sweeping through view during a pick).
         let max_missed = self.max_missed_frames;
+        let ghost_frames = self.ghost_frames;
+        let mut new_ghosts: Vec<Ghost> = self
+            .tracks
+            .iter()
+            .filter(|t| t.missed_frames > max_missed && t.reported)
+            .map(|t| Ghost {
+                center: t.center,
+                area: rect_area(&t.last_rect),
+                ttl: ghost_frames,
+            })
+            .collect();
+        self.ghosts.append(&mut new_ghosts);
         self.tracks.retain(|t| t.missed_frames <= max_missed);
 
         // Unmatched detections become new tracks — unless they are a split of
@@ -183,6 +224,26 @@ impl Tracker {
                 );
                 continue;
             }
+            // A detection matching a ghost is the same object reappearing after
+            // a long occlusion: track it, but pre-mark it reported so it is not
+            // picked a second time.
+            let (dcx, dcy) = rect_center(&det.rect);
+            let det_area = rect_area(&det.rect);
+            let ghost_match = self.ghosts.iter().position(|g| {
+                let dist = ((dcx - g.center.0).powi(2) + (dcy - g.center.1).powi(2)).sqrt();
+                dist <= self.max_match_dist_px
+                    && areas_compatible(g.area, det_area, self.max_area_ratio)
+            });
+            let reported = if let Some(i) = ghost_match {
+                self.ghosts.swap_remove(i);
+                debug!(
+                    "Tracker: reappeared object at {:?} matches a recently-picked track — tracking without re-picking",
+                    det.rect
+                );
+                true
+            } else {
+                false
+            };
             let id = self.next_id;
             self.next_id += 1;
             let mut det = det;
@@ -193,7 +254,7 @@ impl Tracker {
                 center: rect_center(&det.rect),
                 missed_frames: 0,
                 frames_seen: 1,
-                reported: false,
+                reported,
                 classified: false,
                 detected: det,
             });
@@ -374,24 +435,55 @@ mod tests {
     }
 
     #[test]
-    fn stale_track_is_evicted_and_new_object_gets_new_id() {
+    fn reappearance_after_long_occlusion_is_tracked_but_not_re_picked() {
+        // #5: an object picked (reported) then occluded long enough to be
+        // evicted must NOT be picked again when it reappears.
+        let mut tracker = Tracker::new();
+        for _ in 0..3 {
+            tracker.update(vec![detection_at(100, 100)], 0.0);
+        }
+        assert_eq!(tracker.take_ready(3).len(), 1, "first Pick");
+        // Gone for more than max_missed_frames (5): evicted → becomes a ghost.
+        for _ in 0..6 {
+            tracker.update(vec![], 0.0);
+        }
+        assert!(tracker.tracks.is_empty(), "track evicted after 6 misses");
+        // Reappears at the same place (belt stopped): a fresh track (new id),
+        // but pre-marked reported, so no duplicate Pick.
+        for _ in 0..3 {
+            tracker.update(vec![detection_at(100, 100)], 0.0);
+        }
+        assert!(
+            tracker.take_ready(3).is_empty(),
+            "the reappearing object must not be picked a second time"
+        );
+        assert_eq!(tracker.tracks.len(), 1, "it is still tracked (id 2)");
+        assert_eq!(tracker.tracks[0].id, 2);
+    }
+
+    #[test]
+    fn a_genuinely_new_object_after_the_ghost_expires_is_picked() {
         let mut tracker = Tracker::new();
         for _ in 0..3 {
             tracker.update(vec![detection_at(100, 100)], 0.0);
         }
         assert_eq!(tracker.take_ready(3).len(), 1);
-        // Gone for more than max_missed_frames (5): evicted.
         for _ in 0..6 {
+            tracker.update(vec![], 0.0); // evicted → ghost
+        }
+        // Wait out the ghost window (ghost_frames = 30).
+        for _ in 0..31 {
             tracker.update(vec![], 0.0);
         }
-        assert!(tracker.tracks.is_empty(), "track evicted after 6 misses");
-        // A new object at the same place is a NEW track (new id, new Pick).
+        // A new object at the same spot is now a genuine new Pick.
         for _ in 0..3 {
             tracker.update(vec![detection_at(100, 100)], 0.0);
         }
-        let ready = tracker.take_ready(3);
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].id, 2);
+        assert_eq!(
+            tracker.take_ready(3).len(),
+            1,
+            "after the ghost expires a new object is picked"
+        );
     }
 
     #[test]

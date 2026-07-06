@@ -834,9 +834,11 @@ impl MockCamera {
     /// Side of the synthetic square blob, in pixels (area 1600 px² sits inside
     /// the default `[vision]` min/max area band).
     const BLOB_PX: i32 = 40;
-    /// Frames the blob is absent at the end of each cycle. Must exceed the
-    /// tracker's `max_missed_frames` (5) so the track is evicted and the next
-    /// appearance is a NEW object with a new id and its own Pick.
+    /// Frames the blob is absent at the end of each cycle. Exceeds the
+    /// tracker's `max_missed_frames` (5) so the track is evicted between cycles.
+    /// While the belt runs the evicted track's ghost drifts away, so the next
+    /// appearance is a fresh Pick; while the belt is stopped the tracker treats
+    /// the reappearing centred blob as the same object (ghost suppression, #5).
     const GAP_FRAMES: u64 = 8;
 
     pub fn new(width: u32, height: u32, fps: u32, invert: bool) -> Self {
