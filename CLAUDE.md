@@ -44,5 +44,4 @@ Authoritative reference: Appendix "Delta X2 G-code Protocol Reference" in the ma
 
 - `docs/manual.tex` + `docs/manual/*.tex` — the operations manual (LaTeX book, one file per chapter: preamble, titlepage, overview, installation, configuration, operation, maintenance, gcode appendix; has an index via imakeidx). Update the relevant chapter when behavior/config changes, and rebuild the PDF.
 - GitHub issues (https://github.com/guycorbaz/deltax2sort/issues) — the tracker of record for remaining work; the go-to place to see what is stubbed vs. real. `docs/TODO.md` is only a pointer.
-- `docs/specifications.md`, `implementation_plan.md` — original requirements and phase plan.
-- Known duplication: `implementation_plan.md`/`walkthrough.md` exist at root and in `docs/` (cleanup is a TODO item).
+- `docs/specifications.md`, `docs/implementation_plan.md`, `docs/walkthrough.md` — original requirements, phase plan and walkthrough (single canonical copies under `docs/`).
