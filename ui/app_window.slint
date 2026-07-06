@@ -27,6 +27,10 @@ export component AppWindow inherits Window {
     // True when no fresh frame has arrived for ~1 s: the feed is shown as
     // LOST rather than silently frozen on the last image.
     in property <bool> feed-lost: false;
+    // True when the vision loop has exited (panic / permanent error): detection
+    // is dead until the app is restarted — a stronger, sticky state than the
+    // transient feed-lost.
+    in property <bool> vision-dead: false;
     in property <string> robot-status: "Disconnected";
     in property <string> conveyor-status: "Stopped";
     in property <int> bricks-sorted: 0;
@@ -132,13 +136,28 @@ export component AppWindow inherits Window {
                     }
                     // Staleness banner: overlays the (now stale) last frame so
                     // the operator never mistakes a frozen image for a live one.
-                    if (feed-lost): Rectangle {
+                    // FEED LOST is transient; VISION DEAD (below) is permanent
+                    // and takes priority.
+                    if (feed-lost && !vision-dead): Rectangle {
                         background: #000000cc;
                         Text {
                             text: "⚠  FEED LOST";
                             color: #f44336;
                             font-size: 24px;
                             font-weight: 900;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                    // Vision loop has died: detection is gone until restart.
+                    if (vision-dead): Rectangle {
+                        background: #000000ee;
+                        Text {
+                            text: "⚠  VISION DEAD\n(restart required)";
+                            color: #f44336;
+                            font-size: 22px;
+                            font-weight: 900;
+                            wrap: word-wrap;
                             vertical-alignment: center;
                             horizontal-alignment: center;
                         }

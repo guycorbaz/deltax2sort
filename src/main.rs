@@ -453,6 +453,27 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Vision-loop health: if the loop exits unexpectedly (a panic in OpenCV
+    // processing, or a permanent error), detection is dead until restart — flag
+    // the UI as VISION DEAD. A deliberate shutdown is not a failure. The monitor
+    // owns the vision JoinHandle; the shutdown sequence awaits the monitor.
+    let vision_monitor = {
+        let ui_handle = ui_weak.clone();
+        let shutdown_seen = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let outcome = vision_handle.await;
+            if !*shutdown_seen.borrow() {
+                warn!("Vision loop exited unexpectedly ({outcome:?}) — detection is DEAD until restart");
+                let ui_handle2 = ui_handle.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_handle2.upgrade() {
+                        ui.set_vision_dead(true);
+                    }
+                });
+            }
+        })
+    };
+
     // Start / Pause toggle: drives the conveyor AND the pick pipeline
     // (Resume/Pause) — sorting never starts without the operator.
     {
@@ -770,7 +791,9 @@ async fn main() -> anyhow::Result<()> {
     // by the timeout, after which the runtime drop aborts whatever remains.
     match tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
         let _ = orch_handle.await;
-        let _ = vision_handle.await;
+        // Awaiting the monitor awaits the vision loop itself (the monitor owns
+        // its JoinHandle) plus the health check.
+        let _ = vision_monitor.await;
     })
     .await
     {
