@@ -98,7 +98,7 @@ export component AppWindow inherits Window {
             Rectangle { } // Spacer
             Text {
                 text: "Status: " + robot-status;
-                color: estopped ? #f44336 : (is-running ? #4caf50 : #ffb74d);
+                color: estopped ? #f44336 : (orchestrator-running ? #4caf50 : #ffb74d);
                 vertical-alignment: center;
                 font-weight: 600;
             }
@@ -227,7 +227,11 @@ export component AppWindow inherits Window {
                     }
 
                     Button {
-                        text: command-pending ? "Working…" : (is-running ? "Pause System" : "Start Sorting");
+                        // Label follows the CONFIRMED orchestrator state so it
+                        // offers Resume ("Start Sorting") whenever sorting is
+                        // paused — including after a command failure with the
+                        // belt still running.
+                        text: command-pending ? "Working…" : (orchestrator-running ? "Pause System" : "Start Sorting");
                         primary: true;
                         min-height: 48px;
                         // Locked after E-stop until a successful re-home, and

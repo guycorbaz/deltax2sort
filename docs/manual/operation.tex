@@ -73,8 +73,11 @@ retries every 500~ms without affecting robot control.
     \midrule
     Start Sorting / Pause System & Starts the belt at \cfg{default\_speed}
       \emph{and} resumes the pick pipeline; pressing again stops the belt
-      and pauses picking. Disabled after an emergency stop until the robot
-      has been re-homed. \\
+      and pauses picking. Its label follows the confirmed sorting state, so
+      whenever sorting is paused --- including after a command failure
+      auto-paused it --- the button reads \emph{Start Sorting} and resumes
+      it. Disabled after an emergency stop until the robot has been
+      re-homed. \\
     Stop Conveyor & Stops the belt and pauses the pick pipeline (enabled
       while running). \\
     Home Robot & Homes the robot with priority — it runs even while the

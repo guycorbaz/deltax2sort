@@ -493,7 +493,11 @@ async fn main() -> anyhow::Result<()> {
             if ui.get_command_pending() {
                 return;
             }
-            let starting = !ui.get_is_running();
+            // Decide Start vs Pause from the CONFIRMED sorting state, not the
+            // conveyor's `is-running`: after a robot-command failure the
+            // orchestrator pauses while the belt may still run, and the
+            // operator must be able to Resume (send Resume + restart the belt).
+            let starting = !ui.get_orchestrator_running();
             info!("UI: {} requested", if starting { "Start" } else { "Pause" });
             ui.set_command_pending(true);
             ui.set_error_text("".into());
