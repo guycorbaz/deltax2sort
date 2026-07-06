@@ -103,13 +103,16 @@ async fn main() -> anyhow::Result<()> {
         ))
     } else {
         info!("Connecting to real Camera (device {})", cam_cfg.device_id);
-        Box::new(OpencvCamera::new(
-            cam_cfg.device_id,
-            cam_cfg.width,
-            cam_cfg.height,
-            cam_cfg.fps,
-            cam_cfg.fourcc.clone(),
-        ))
+        Box::new(
+            OpencvCamera::new(
+                cam_cfg.device_id,
+                cam_cfg.width,
+                cam_cfg.height,
+                cam_cfg.fps,
+                cam_cfg.fourcc.clone(),
+            )
+            .context("invalid camera.fourcc")?,
+        )
     };
     camera
         .connect()

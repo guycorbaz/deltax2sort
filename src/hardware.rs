@@ -651,21 +651,50 @@ pub struct OpencvCamera {
     width: u32,
     height: u32,
     fps: u32,
-    fourcc: Option<String>,
+    /// Validated at construction to be exactly four ASCII bytes, so `connect`
+    /// can index it without a length check (no runtime panic path in the
+    /// driver, even if a call site bypasses `AppConfig::validate`).
+    fourcc: Option<[u8; 4]>,
     cap: Option<videoio::VideoCapture>,
 }
 
 impl OpencvCamera {
-    pub fn new(device_id: i32, width: u32, height: u32, fps: u32, fourcc: Option<String>) -> Self {
-        Self {
+    pub fn new(
+        device_id: i32,
+        width: u32,
+        height: u32,
+        fps: u32,
+        fourcc: Option<String>,
+    ) -> Result<Self> {
+        let fourcc = fourcc.map(parse_fourcc).transpose()?;
+        Ok(Self {
             device_id,
             width,
             height,
             fps,
             fourcc,
             cap: None,
-        }
+        })
     }
+}
+
+/// Turn a configured FOURCC string into the exact four ASCII bytes OpenCV
+/// expects, rejecting anything else instead of panicking on an out-of-range
+/// index later. A FOURCC is four ASCII characters (e.g. "MJPG").
+fn parse_fourcc(s: String) -> Result<[u8; 4]> {
+    let bytes: [u8; 4] = s.as_bytes().try_into().map_err(|_| {
+        anyhow!(
+            "camera.fourcc must be exactly 4 ASCII characters (e.g. \"MJPG\"), got {:?}",
+            s
+        )
+    })?;
+    if !bytes.is_ascii() {
+        return Err(anyhow!(
+            "camera.fourcc must be ASCII (e.g. \"MJPG\"), got {:?}",
+            s
+        ));
+    }
+    Ok(bytes)
 }
 
 // SAFETY: `VideoCapture` is only ever accessed through `&mut self` methods
@@ -689,8 +718,8 @@ impl CameraDriver for OpencvCamera {
         // get_frame returns the freshest frame, not one buffered seconds ago
         // (best effort — not every backend honours it).
         let _ = cap.set(videoio::CAP_PROP_BUFFERSIZE, 1.0);
-        if let Some(fourcc) = &self.fourcc {
-            let b = fourcc.as_bytes();
+        if let Some(b) = self.fourcc {
+            // b is guaranteed 4 ASCII bytes by the constructor.
             let code = videoio::VideoWriter::fourcc(
                 b[0] as char,
                 b[1] as char,
@@ -911,6 +940,28 @@ mod tests {
         c.stop().await.unwrap();
         use MockConveyorCommand::*;
         assert_eq!(*log.lock().unwrap(), vec![Connect, Start(800), Stop]);
+    }
+
+    #[test]
+    fn fourcc_must_be_exactly_four_ascii_bytes() {
+        // Valid: exactly four ASCII characters.
+        assert_eq!(parse_fourcc("MJPG".to_string()).unwrap(), *b"MJPG");
+        // Too short / too long: rejected, never a panicking index.
+        assert!(parse_fourcc("MJP".to_string()).is_err());
+        assert!(parse_fourcc("MJPGX".to_string()).is_err());
+        assert!(parse_fourcc(String::new()).is_err());
+        // Four chars but non-ASCII (2-byte 'é' pushes the byte length past 4).
+        assert!(parse_fourcc("éJPG".to_string()).is_err());
+    }
+
+    #[test]
+    fn camera_new_validates_fourcc_and_never_panics_on_connect_input() {
+        // The driver stores a validated [u8;4], so a bad FOURCC fails at
+        // construction instead of panicking inside connect().
+        assert!(OpencvCamera::new(0, 640, 480, 30, Some("bad".to_string())).is_err());
+        assert!(OpencvCamera::new(0, 640, 480, 30, Some("MJPG".to_string())).is_ok());
+        // No FOURCC configured is fine (device default).
+        assert!(OpencvCamera::new(0, 640, 480, 30, None).is_ok());
     }
 
     // --- Scripted fake serial port: protocol-level tests for
