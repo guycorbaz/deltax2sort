@@ -133,6 +133,17 @@ impl Tracker {
         }
     }
 
+    /// Bounding box + class of every track matched in the current frame
+    /// (`missed_frames == 0`), for the live overlay. Only currently-visible
+    /// tracks are returned, so a box is never drawn over empty belt.
+    pub fn current_overlays(&self) -> Vec<(Rect, super::ObjectClass)> {
+        self.tracks
+            .iter()
+            .filter(|t| t.missed_frames == 0)
+            .map(|t| (t.last_rect, t.detected.class.clone()))
+            .collect()
+    }
+
     /// Return every track detected in at least `min_seen` frames that has
     /// not been reported yet, marking it reported. Each physical object is
     /// therefore returned exactly once over its lifetime.
@@ -239,6 +250,20 @@ mod tests {
             "reappearing object must rejoin its belt-drifted track, not spawn a new one"
         );
         assert_eq!(tracker.tracks[0].id, 1);
+    }
+
+    #[test]
+    fn current_overlays_shows_only_tracks_visible_this_frame() {
+        let mut tracker = Tracker::new();
+        // Two objects seen this frame → both overlaid.
+        tracker.update(vec![detection_at(100, 100), detection_at(300, 300)], 0.0);
+        assert_eq!(tracker.current_overlays().len(), 2);
+        // Next frame only one is detected: the missed one must NOT be drawn
+        // (no box over empty belt), so exactly one overlay remains.
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        let overlays = tracker.current_overlays();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].0, Rect::new(100, 100, 20, 20));
     }
 
     #[test]

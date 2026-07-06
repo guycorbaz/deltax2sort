@@ -16,6 +16,9 @@ export component AppWindow inherits Window {
     background: #121212;
 
     in property <image> camera-feed: @image-url("");
+    // True when no fresh frame has arrived for ~1 s: the feed is shown as
+    // LOST rather than silently frozen on the last image.
+    in property <bool> feed-lost: false;
     in property <string> robot-status: "Disconnected";
     in property <string> conveyor-status: "Stopped";
     in property <int> bricks-sorted: 0;
@@ -93,12 +96,27 @@ export component AppWindow inherits Window {
                         source: camera-feed;
                         width: 100%;
                         height: 100%;
+                        // Preserve aspect ratio; letterbox inside the panel.
+                        image-fit: contain;
                     }
-                    if (camera-feed.width == 0): Text {
+                    if (camera-feed.width == 0 && !feed-lost): Text {
                         text: "Camera Feed Disconnected";
                         color: #555555;
                         vertical-alignment: center;
                         horizontal-alignment: center;
+                    }
+                    // Staleness banner: overlays the (now stale) last frame so
+                    // the operator never mistakes a frozen image for a live one.
+                    if (feed-lost): Rectangle {
+                        background: #000000cc;
+                        Text {
+                            text: "⚠  FEED LOST";
+                            color: #f44336;
+                            font-size: 24px;
+                            font-weight: 900;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
                     }
                 }
 

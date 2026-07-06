@@ -1,12 +1,71 @@
-use super::DetectedObject;
 use super::calibration::{CalibrationParams, CoordinateTransformer};
 use super::detector::BlobDetector;
 use super::tracker::Tracker;
-use anyhow::{Context, Result};
+use super::{DetectedObject, ObjectClass};
+use anyhow::{Context, Result, anyhow};
 use log::{debug, error, info, warn};
-use opencv::core::Mat;
+use opencv::core::{Mat, Scalar, Size};
+use opencv::{imgproc, prelude::*};
+use slint::{Rgb8Pixel, SharedPixelBuffer};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
+
+/// Live-feed image (frame with detection overlays already burned in),
+/// downscaled for the display. Latest-wins: the UI only ever shows the newest,
+/// so accumulated latency can never lie to the operator about belt position.
+pub type FrameImage = SharedPixelBuffer<Rgb8Pixel>;
+
+/// Max display size the feed is downscaled to before the Mat→Image conversion
+/// (the Pi panel is 800x480 and the preview occupies only part of it).
+const DISPLAY_MAX_W: u32 = 640;
+const DISPLAY_MAX_H: u32 = 480;
+
+/// Overlay colours in OpenCV BGR. Known parts are green; anything still
+/// unclassified (today: everything — the classifier is a stub) is yellow.
+fn overlay_color(class: &ObjectClass) -> Scalar {
+    match class {
+        ObjectClass::Unknown => Scalar::new(0.0, 255.0, 255.0, 0.0), // yellow (BGR)
+        _ => Scalar::new(0.0, 255.0, 0.0, 0.0),                      // green
+    }
+}
+
+/// Downscale a BGR `Mat` to fit `max_w`×`max_h` (never upscaling) and convert
+/// it to an RGB `SharedPixelBuffer` the Slint `Image` can wrap directly. Built
+/// here, in the vision/blocking thread, so the UI closure only wraps and sets.
+fn mat_to_frame_image(bgr: &Mat, max_w: u32, max_h: u32) -> Result<FrameImage> {
+    let (w, h) = (bgr.cols(), bgr.rows());
+    if w <= 0 || h <= 0 {
+        return Err(anyhow!("cannot render an empty frame ({w}x{h})"));
+    }
+    let scale = (max_w as f64 / w as f64)
+        .min(max_h as f64 / h as f64)
+        .min(1.0);
+    let dst_w = ((w as f64 * scale).round() as i32).max(1);
+    let dst_h = ((h as f64 * scale).round() as i32).max(1);
+
+    let mut resized = Mat::default();
+    imgproc::resize(
+        bgr,
+        &mut resized,
+        Size::new(dst_w, dst_h),
+        0.0,
+        0.0,
+        imgproc::INTER_AREA,
+    )?;
+    let mut rgb = Mat::default();
+    imgproc::cvt_color(&resized, &mut rgb, imgproc::COLOR_BGR2RGB, 0)?;
+    // Fresh single-channel-group Mats from resize/cvt_color are contiguous, so
+    // the byte buffer is a tight w*h*3 with no row padding — copy it straight
+    // into the pixel buffer.
+    if !rgb.is_continuous() {
+        return Err(anyhow!("converted frame is not contiguous"));
+    }
+    let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(dst_w as u32, dst_h as u32);
+    buffer
+        .make_mut_bytes()
+        .copy_from_slice(rgb.data_bytes()?);
+    Ok(buffer)
+}
 
 use crate::app_config::AppConfig;
 use crate::hardware::CameraDriver;
@@ -85,6 +144,26 @@ impl VisionPipeline {
         }
         Ok(ready)
     }
+
+    /// Render the current frame for the live feed: draw a bounding box (green =
+    /// known, yellow = unknown) around every track visible in this frame, then
+    /// downscale + convert to an RGB buffer. Must be called right after
+    /// `process_frame` for the same `frame`, so the boxes match the image.
+    /// Overlays are burned into the frame, so image and boxes can never desync.
+    pub fn render_display_frame(&self, frame: &Mat) -> Result<FrameImage> {
+        let mut annotated = frame.clone();
+        for (rect, class) in self.tracker.current_overlays() {
+            imgproc::rectangle(
+                &mut annotated,
+                rect,
+                overlay_color(&class),
+                2, // px, at capture resolution — scaled down with the frame
+                imgproc::LINE_8,
+                0,
+            )?;
+        }
+        mat_to_frame_image(&annotated, DISPLAY_MAX_W, DISPLAY_MAX_H)
+    }
 }
 
 /// Spawn the vision loop: the task takes ownership of the camera and feeds
@@ -99,6 +178,9 @@ pub fn spawn_vision_loop(
     tx: mpsc::UnboundedSender<OrchestratorMsg>,
     mut shutdown: watch::Receiver<bool>,
     belt_running: watch::Receiver<bool>,
+    // Latest-wins sink for the live feed. The UI reads only the newest frame,
+    // so a slow consumer drops stale frames instead of building a backlog.
+    frame_tx: watch::Sender<Option<FrameImage>>,
 ) -> tokio::task::JoinHandle<()> {
     let (width, height) = camera.resolution();
     let mm_per_px = config.vision.mm_per_px;
@@ -143,8 +225,14 @@ pub fn spawn_vision_loop(
             // Snapshot the belt run-state for this frame: no prediction drift
             // while the belt is stopped (avoids phantom duplicate picks).
             let running = *belt_running.borrow();
+            // Detect/track AND render the live-feed image in the same blocking
+            // hop, on the same frame, so the overlay boxes always match the
+            // pixels shown.
             let result = tokio::task::spawn_blocking(move || {
-                let out = pipeline.process_frame(&frame, dt, now, running);
+                let out = pipeline.process_frame(&frame, dt, now, running).and_then(|ready| {
+                    let image = pipeline.render_display_frame(&frame)?;
+                    Ok((ready, image))
+                });
                 (pipeline, out)
             })
             .await
@@ -153,7 +241,12 @@ pub fn spawn_vision_loop(
                 Ok((p, out)) => {
                     pipeline = p;
                     match out {
-                        Ok(ready) => ready,
+                        Ok((ready, image)) => {
+                            // Latest-wins: overwrites any frame the UI has not
+                            // consumed yet. Ignore send errors (no receiver).
+                            let _ = frame_tx.send(Some(image));
+                            ready
+                        }
                         Err(e) => {
                             warn!("Vision: frame processing failed: {:#} — retrying", e);
                             tokio::time::sleep(CAPTURE_RETRY_DELAY).await;
@@ -240,6 +333,42 @@ mod tests {
         assert!((pos.x - 50.0).abs() < 1.0, "x: {}", pos.x);
         assert!((pos.y + 60.0).abs() < 1.0, "y: {}", pos.y);
         assert_eq!(pos.z, 0.0, "vision must always report the belt plane");
+    }
+
+    #[test]
+    fn render_display_frame_downscales_and_stays_tight() {
+        // 1280x720 fit into 640x480 (never upscaling) → scale 0.5 → 640x360.
+        let mut pipeline = VisionPipeline::new(&test_config(), 1280, 720);
+        let mut frame =
+            Mat::new_rows_cols_with_default(720, 1280, CV_8UC3, Scalar::all(0.0)).unwrap();
+        imgproc::rectangle(
+            &mut frame,
+            Rect::new(600, 300, 40, 40),
+            Scalar::new(255.0, 255.0, 255.0, 0.0),
+            imgproc::FILLED,
+            imgproc::LINE_8,
+            0,
+        )
+        .unwrap();
+        // Populate the tracker so there is a box to overlay.
+        pipeline
+            .process_frame(&frame, Duration::from_millis(33), Instant::now(), true)
+            .unwrap();
+
+        let img = pipeline.render_display_frame(&frame).unwrap();
+        assert_eq!(img.width(), 640);
+        assert_eq!(img.height(), 360);
+        // Tight RGB buffer: exactly w*h*3 bytes, no row padding.
+        assert_eq!(img.as_bytes().len(), 640 * 360 * 3);
+    }
+
+    #[test]
+    fn render_display_frame_handles_an_empty_scene() {
+        let pipeline = VisionPipeline::new(&test_config(), 640, 480);
+        let frame = Mat::new_rows_cols_with_default(480, 640, CV_8UC3, Scalar::all(0.0)).unwrap();
+        // No detections → no overlays, but a valid image is still produced.
+        let img = pipeline.render_display_frame(&frame).unwrap();
+        assert_eq!((img.width(), img.height()), (640, 480));
     }
 
     #[test]

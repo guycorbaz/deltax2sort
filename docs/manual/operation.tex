@@ -97,8 +97,14 @@ retries every 500~ms without affecting robot control.
 The status line reflects the orchestrator's \emph{confirmed} state —
 \emph{Ready (paused)}, \emph{Sorting}, or \emph{E-STOP -- HOME REQUIRED}
 — never merely what a button press requested. The dashboard also shows
-the conveyor state and the total number of sorted parts. The live camera
-feed and detection overlays are not wired up yet (see the issue tracker).
+the conveyor state and the total number of sorted parts. The left panel
+shows the live camera feed with detection overlays: a bounding box is drawn
+around every object currently seen --- green for a recognised part, yellow
+while it is still unclassified (today all parts, until the classifier is
+trained). The feed always shows the newest frame (older ones are dropped, so
+the image never lags the belt); if no frame arrives for about a second the
+panel switches to a red \emph{FEED LOST} banner rather than freezing
+silently on the last image.
 
 When a hardware command fails --- a conveyor start/stop, a robot move, or
 a homing --- a red banner appears in the controls column with a short

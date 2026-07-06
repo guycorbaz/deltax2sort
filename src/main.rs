@@ -198,14 +198,21 @@ async fn main() -> anyhow::Result<()> {
     // stopped). Set true only after a successful conveyor start.
     let (belt_running_tx, belt_running_rx) = tokio::sync::watch::channel(false);
 
+    // Live camera feed: latest-wins watch channel from the vision loop to the
+    // UI (the operator only ever needs the newest frame). None until the first
+    // frame is rendered.
+    let (frame_tx, frame_rx) = tokio::sync::watch::channel::<Option<vision::pipeline::FrameImage>>(None);
+
     // --- Vision loop: owns the camera, feeds pick-ready objects to the
-    // orchestrator (camera → detect → track → pixel-to-world → Pick) ---
+    // orchestrator (camera → detect → track → pixel-to-world → Pick) and
+    // publishes the annotated frame for the UI ---
     let vision_handle = vision::pipeline::spawn_vision_loop(
         camera,
         &config,
         orch_tx.clone(),
         shutdown_rx,
         belt_running_rx,
+        frame_tx,
     );
 
     // --- UI ---
@@ -277,6 +284,44 @@ async fn main() -> anyhow::Result<()> {
                 }
                 if error_rx.changed().await.is_err() {
                     break; // orchestrator gone
+                }
+            }
+        });
+    }
+
+    // Live camera feed → UI, with a staleness watchdog: no frame for
+    // FEED_TIMEOUT flips the UI to a visible "FEED LOST" state rather than
+    // freezing on the last image with no indication.
+    {
+        let ui_handle = ui_weak.clone();
+        let mut frame_rx = frame_rx;
+        const FEED_TIMEOUT: Duration = Duration::from_secs(1);
+        tokio::spawn(async move {
+            loop {
+                match tokio::time::timeout(FEED_TIMEOUT, frame_rx.changed()).await {
+                    Ok(Ok(())) => {
+                        let image = frame_rx.borrow_and_update().clone();
+                        if let Some(buffer) = image {
+                            let ui_handle2 = ui_handle.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_handle2.upgrade() {
+                                    // Wrap-and-set only: the pixel buffer was
+                                    // built in the vision/blocking thread.
+                                    ui.set_camera_feed(slint::Image::from_rgb8(buffer));
+                                    ui.set_feed_lost(false);
+                                }
+                            });
+                        }
+                    }
+                    Ok(Err(_)) => break, // vision loop gone: stop updating
+                    Err(_) => {
+                        let ui_handle2 = ui_handle.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_handle2.upgrade() {
+                                ui.set_feed_lost(true);
+                            }
+                        });
+                    }
                 }
             }
         });
