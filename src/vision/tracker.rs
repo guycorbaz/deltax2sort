@@ -1,4 +1,5 @@
 use super::DetectedObject;
+use log::debug;
 use opencv::core::Rect;
 
 /// One physical object being followed across frames. All geometry is in
@@ -41,6 +42,26 @@ fn areas_compatible(a: f32, b: f32, max_ratio: f32) -> bool {
     lo > 0.0 && hi <= lo * max_ratio
 }
 
+fn rect_intersection_area(a: &Rect, b: &Rect) -> f32 {
+    let x1 = a.x.max(b.x);
+    let y1 = a.y.max(b.y);
+    let x2 = (a.x + a.width).min(b.x + b.width);
+    let y2 = (a.y + a.height).min(b.y + b.height);
+    ((x2 - x1).max(0) as f32) * ((y2 - y1).max(0) as f32)
+}
+
+/// Overlap coefficient: intersection over the smaller box area (in [0, 1]).
+/// High when one box sits largely inside the other (a split fragment); near
+/// zero for boxes that merely touch (adjacent distinct parts).
+fn overlap_coeff(a: &Rect, b: &Rect) -> f32 {
+    let min_area = rect_area(a).min(rect_area(b));
+    if min_area > 0.0 {
+        rect_intersection_area(a, b) / min_area
+    } else {
+        0.0
+    }
+}
+
 /// Multi-frame object tracker: greedy nearest-neighbour matching of
 /// detections to active tracks, with belt-motion prediction along pixel +y.
 pub struct Tracker {
@@ -54,6 +75,10 @@ pub struct Tracker {
     /// (e.g. a gripper edge) within the distance radius from stealing a small
     /// part's identity.
     max_area_ratio: f32,
+    /// A new detection overlapping an already-tracked object by at least this
+    /// coefficient is treated as a split-blob fragment and suppressed (no
+    /// duplicate track), rather than a distinct adjacent part.
+    min_birth_overlap: f32,
     /// Tracks unmatched for more than this many consecutive frames are
     /// evicted.
     max_missed_frames: u32,
@@ -67,6 +92,7 @@ impl Tracker {
             // Tuning constants; move to config if field experience demands.
             max_match_dist_px: 60.0,
             max_area_ratio: 3.0,
+            min_birth_overlap: 0.5,
             max_missed_frames: 5,
         }
     }
@@ -141,8 +167,22 @@ impl Tracker {
         let max_missed = self.max_missed_frames;
         self.tracks.retain(|t| t.missed_frames <= max_missed);
 
-        // Unmatched detections become new tracks.
+        // Unmatched detections become new tracks — unless they are a split of
+        // an object already tracked this frame. A threshold split yields a
+        // second blob heavily overlapping the first (which matched the track);
+        // suppress it so it can't become a duplicate Pick. Adjacent distinct
+        // parts barely overlap, so they are left to spawn their own tracks.
         for det in detections.into_iter().flatten() {
+            let is_split = self.tracks.iter().any(|t| {
+                t.missed_frames == 0 && overlap_coeff(&det.rect, &t.last_rect) >= self.min_birth_overlap
+            });
+            if is_split {
+                debug!(
+                    "Tracker: suppressing split-blob detection at {:?} (overlaps a tracked object)",
+                    det.rect
+                );
+                continue;
+            }
             let id = self.next_id;
             self.next_id += 1;
             let mut det = det;
@@ -240,6 +280,52 @@ mod tests {
         let small = tracker.tracks.iter().find(|t| t.id == 1).unwrap();
         assert_eq!(small.last_rect.width, 20, "small track kept its own box");
         assert_eq!(small.missed_frames, 1, "small track went unmatched this frame");
+    }
+
+    #[test]
+    fn a_split_blob_does_not_spawn_a_duplicate_track() {
+        let mut tracker = Tracker::new();
+        // Frame 1: the object appears whole.
+        tracker.update(vec![detection_sized(100, 100, 40, 40)], 0.0);
+        // Frame 2: thresholding splits it into two overlapping blobs at the
+        // same spot. One matches the track; the other overlaps it heavily and
+        // must be suppressed, not spawn a second track (→ a duplicate Pick).
+        tracker.update(
+            vec![
+                detection_sized(100, 100, 30, 40),
+                detection_sized(115, 100, 25, 40),
+            ],
+            0.0,
+        );
+        assert_eq!(tracker.tracks.len(), 1, "a split blob must not duplicate the track");
+    }
+
+    #[test]
+    fn a_split_at_birth_yields_one_track() {
+        let mut tracker = Tracker::new();
+        // Two heavily overlapping blobs the very first frame (a split object).
+        tracker.update(
+            vec![
+                detection_sized(100, 100, 30, 30),
+                detection_sized(110, 100, 30, 30),
+            ],
+            0.0,
+        );
+        assert_eq!(tracker.tracks.len(), 1, "two overlapping birth blobs = one object");
+    }
+
+    #[test]
+    fn adjacent_distinct_parts_stay_separate() {
+        let mut tracker = Tracker::new();
+        // Two small parts side by side, not overlapping: legitimately distinct.
+        tracker.update(
+            vec![
+                detection_sized(100, 100, 20, 20),
+                detection_sized(140, 100, 20, 20),
+            ],
+            0.0,
+        );
+        assert_eq!(tracker.tracks.len(), 2, "distinct adjacent parts must stay separate");
     }
 
     #[test]
