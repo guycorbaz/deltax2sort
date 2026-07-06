@@ -42,7 +42,10 @@ safety-critical (unit test + human review required).
    Every new motion path goes through `move_to`.
 5. **No unbounded hardware waits**: `write_gcode` blocks on the
    `FEEDBACK:<id>` echo with EOF detection and a 30 s overall deadline — keep
-   every hardware wait deadline-bounded.
+   every hardware wait deadline-bounded. The wait also polls a shared
+   `estop_flag` (`AtomicBool`) so an in-flight command aborts within one serial
+   read window when the E-stop fires; only `home()` clears it (before `G28`),
+   the command the firmware accepts after `M112`.
 6. **On command failure the orchestrator clears its queue and pauses**
    (explicit `Resume` required) — never auto-retry motion after a failure.
 

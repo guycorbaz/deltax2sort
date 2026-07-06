@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use log::{debug, info, warn};
 use opencv::{core, imgproc, prelude::*, videoio};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
@@ -65,11 +66,22 @@ struct SerialEStop {
     port: SharedPort,
     command: &'static [u8],
     label: &'static str,
+    /// Set true so an in-flight `send_and_wait_feedback` aborts promptly
+    /// instead of waiting out the 30 s deadline for an echo the halted
+    /// firmware will never send. `None` for devices without a feedback wait
+    /// (the conveyor writes fire-and-forget).
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl EmergencyStop for SerialEStop {
     fn trigger(&self) {
         warn!("E-STOP: sending halt to {}", self.label);
+        // Raise the cancel flag first so a command already blocked on feedback
+        // stops waiting as soon as its next per-read timeout elapses, rather
+        // than after the full COMMAND_TIMEOUT.
+        if let Some(flag) = &self.cancel {
+            flag.store(true, Ordering::SeqCst);
+        }
         // A poisoned mutex must NEVER prevent the halt: PoisonError still
         // hands over the guard, so recover it and write anyway.
         let mut p = self
@@ -237,6 +249,12 @@ pub struct DeltaX2 {
     estop_port: Option<SharedPort>,
     /// When true the E-stop halt opens the gripper (M05) just before M112.
     release_gripper_on_estop: bool,
+    /// Raised by the E-stop path (`SerialEStop::trigger` / `stop`) and checked
+    /// inside the feedback wait so a command in flight when the halt fires
+    /// stops waiting promptly instead of burning the full COMMAND_TIMEOUT.
+    /// Cleared by `home`, the deliberate recovery that the firmware accepts
+    /// after M112.
+    estop_flag: Arc<AtomicBool>,
 }
 
 impl DeltaX2 {
@@ -260,6 +278,7 @@ impl DeltaX2 {
             port: None,
             estop_port: None,
             release_gripper_on_estop,
+            estop_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -274,8 +293,9 @@ impl DeltaX2 {
         self.cmd_seq += 1;
         let fb_id = format!("sync_{}", self.cmd_seq);
         let cmd = cmd.trim().to_string();
+        let cancel = self.estop_flag.clone();
         tokio::task::spawn_blocking(move || {
-            send_and_wait_feedback(&port, &cmd, &fb_id, Self::COMMAND_TIMEOUT)
+            send_and_wait_feedback(&port, &cmd, &fb_id, Self::COMMAND_TIMEOUT, &cancel)
         })
         .await?
     }
@@ -288,6 +308,7 @@ fn send_and_wait_feedback(
     cmd: &str,
     fb_id: &str,
     timeout: Duration,
+    cancel: &AtomicBool,
 ) -> Result<()> {
     let mut p = port
         .lock()
@@ -330,6 +351,13 @@ fn send_and_wait_feedback(
             // physically completed command into a false 30 s failure.
             Err(e) if e.kind() == ErrorKind::TimedOut => {}
             Err(e) => return Err(anyhow!("reading feedback for '{}': {}", cmd, e)),
+        }
+        // Checked once per loop turn — i.e. after each read, which is itself
+        // bounded by the ~2 s per-read serial timeout. So an E-stop that fires
+        // mid-command surfaces within one read window instead of after the
+        // full 30 s deadline, letting Home/Pause/Resume proceed promptly.
+        if cancel.load(Ordering::SeqCst) {
+            return Err(anyhow!("'{}' aborted by emergency stop", cmd));
         }
         if Instant::now() >= deadline {
             return Err(anyhow!(
@@ -415,6 +443,10 @@ impl RobotController for DeltaX2 {
 
     async fn home(&mut self) -> Result<()> {
         info!("DeltaX2: Homing...");
+        // Homing is the deliberate recovery the firmware accepts after M112, so
+        // clear any pending E-stop cancellation: G28 must actually wait for its
+        // feedback, not be aborted by the flag the E-stop raised.
+        self.estop_flag.store(false, Ordering::SeqCst);
         self.write_gcode("G28").await?;
         // Re-assert absolute positioning after homing (connect already set it,
         // but keep the invariant explicit around G28).
@@ -446,6 +478,8 @@ impl RobotController for DeltaX2 {
 
     async fn stop(&mut self) -> Result<()> {
         warn!("DeltaX2: Sending emergency stop (M112)!");
+        // Abort any in-flight feedback wait promptly (mirrors SerialEStop).
+        self.estop_flag.store(true, Ordering::SeqCst);
         // Fire-and-forget on the dedicated handle: never waits for
         // feedback and never queues behind an in-flight command.
         let port = self
@@ -479,6 +513,7 @@ impl RobotController for DeltaX2 {
             port: self.estop_port.clone()?,
             command,
             label,
+            cancel: Some(self.estop_flag.clone()),
         }))
     }
 }
@@ -566,6 +601,8 @@ impl ConveyorController for SerialConveyor {
             port: self.estop_port.clone()?,
             command: b"M5\n",
             label: "conveyor (M5)",
+            // The conveyor writes fire-and-forget; no feedback wait to cancel.
+            cancel: None,
         }))
     }
 }
@@ -1140,10 +1177,16 @@ mod tests {
         (shared, writes)
     }
 
+    /// The feedback wait with no active E-stop cancellation (the common case
+    /// in these tests). Cancellation itself is covered separately.
+    fn wait_fb(port: &SharedPort, cmd: &str, fb_id: &str, timeout: Duration) -> Result<()> {
+        send_and_wait_feedback(port, cmd, fb_id, timeout, &AtomicBool::new(false))
+    }
+
     #[test]
     fn feedback_echo_completes_command_and_frames_the_id() {
         let (port, writes) = scripted(vec![ReadStep::Bytes(b"sync_1\n")], WhenDone::Eof);
-        let r = send_and_wait_feedback(&port, "G01 X1 Y2 Z-3 F15000", "sync_1", Duration::from_secs(1));
+        let r = wait_fb(&port, "G01 X1 Y2 Z-3 F15000", "sync_1", Duration::from_secs(1));
         assert!(r.is_ok(), "expected completion, got {:?}", r.err());
         // The FEEDBACK id is appended to the command, newline-terminated.
         assert_eq!(
@@ -1159,7 +1202,7 @@ mod tests {
             vec![ReadStep::Bytes(b"ok\n"), ReadStep::Bytes(b"sync_1\n")],
             WhenDone::Eof,
         );
-        assert!(send_and_wait_feedback(&port, "M03", "sync_1", Duration::from_secs(1)).is_ok());
+        assert!(wait_fb(&port, "M03", "sync_1", Duration::from_secs(1)).is_ok());
     }
 
     #[test]
@@ -1173,13 +1216,13 @@ mod tests {
             ],
             WhenDone::Eof,
         );
-        assert!(send_and_wait_feedback(&port, "G28", "sync_2", Duration::from_secs(1)).is_ok());
+        assert!(wait_fb(&port, "G28", "sync_2", Duration::from_secs(1)).is_ok());
     }
 
     #[test]
     fn error_line_fails_the_command() {
         let (port, _) = scripted(vec![ReadStep::Bytes(b"error: bad axis\n")], WhenDone::Eof);
-        let err = send_and_wait_feedback(&port, "G01 X1", "sync_1", Duration::from_secs(1))
+        let err = wait_fb(&port, "G01 X1", "sync_1", Duration::from_secs(1))
             .unwrap_err()
             .to_string();
         assert!(err.contains("reported error"), "got: {err}");
@@ -1188,14 +1231,14 @@ mod tests {
     #[test]
     fn error_matching_is_case_insensitive() {
         let (port, _) = scripted(vec![ReadStep::Bytes(b"ERROR limit hit\n")], WhenDone::Eof);
-        assert!(send_and_wait_feedback(&port, "G01 X1", "sync_1", Duration::from_secs(1)).is_err());
+        assert!(wait_fb(&port, "G01 X1", "sync_1", Duration::from_secs(1)).is_err());
     }
 
     #[test]
     fn eof_before_feedback_fails_fast() {
         // Device unplugged mid-wait: read returns Ok(0). Must not spin forever.
         let (port, _) = scripted(vec![], WhenDone::Eof);
-        let err = send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_secs(30))
+        let err = wait_fb(&port, "G28", "sync_1", Duration::from_secs(30))
             .unwrap_err()
             .to_string();
         assert!(err.contains("closed"), "got: {err}");
@@ -1206,7 +1249,7 @@ mod tests {
         // The robot never echoes: read keeps timing out until the overall
         // deadline elapses (kept short so the test is fast).
         let (port, _) = scripted(vec![], WhenDone::Timeout);
-        let err = send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_millis(30))
+        let err = wait_fb(&port, "G28", "sync_1", Duration::from_millis(30))
             .unwrap_err()
             .to_string();
         assert!(err.contains("timed out"), "got: {err}");
@@ -1226,7 +1269,7 @@ mod tests {
             WhenDone::Eof,
         );
         assert!(
-            send_and_wait_feedback(&port, "G01 X1", "sync_1", Duration::from_secs(1)).is_ok(),
+            wait_fb(&port, "G01 X1", "sync_1", Duration::from_secs(1)).is_ok(),
             "echo split across a read timeout must still be recognised"
         );
     }
@@ -1234,7 +1277,7 @@ mod tests {
     #[test]
     fn non_timeout_read_error_fails_the_command() {
         let (port, _) = scripted(vec![ReadStep::Error], WhenDone::Eof);
-        let err = send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_secs(1))
+        let err = wait_fb(&port, "G28", "sync_1", Duration::from_secs(1))
             .unwrap_err()
             .to_string();
         assert!(err.contains("reading feedback"), "got: {err}");
@@ -1249,7 +1292,25 @@ mod tests {
             writes,
             fail_write: true,
         })));
-        assert!(send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_secs(1)).is_err());
+        assert!(wait_fb(&port, "G28", "sync_1", Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn cancel_flag_aborts_the_wait_without_burning_the_deadline() {
+        // The robot never echoes and the deadline is long (30 s), but the
+        // E-stop cancel flag is already raised: the wait must return promptly
+        // with an abort error, not hang for the full timeout.
+        let (port, _) = scripted(vec![], WhenDone::Timeout);
+        let cancel = AtomicBool::new(true);
+        let started = Instant::now();
+        let err = send_and_wait_feedback(&port, "G01 X1", "sync_1", Duration::from_secs(30), &cancel)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("aborted by emergency stop"), "got: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "cancel must not wait out the 30 s deadline"
+        );
     }
 
     #[tokio::test]
