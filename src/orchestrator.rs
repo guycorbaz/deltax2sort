@@ -59,35 +59,69 @@ pub enum OrchestratorState {
     EStopped,
 }
 
+/// One pick-and-place as an atomic group: its commands plus the expiry of the
+/// detection that produced it. Expiry is re-checked before the group STARTS, so
+/// a sequence that waited behind others past its TTL is dropped whole rather
+/// than descending onto belt the object has left. Once started it always runs
+/// to completion — never abort mid-sequence (the gripper may hold a part).
+struct PickSequence {
+    object_id: u64,
+    expiry: Instant,
+    started: bool,
+    steps: VecDeque<RobotCommand>,
+}
+
 pub struct InstructionQueue {
-    queue: VecDeque<RobotCommand>,
+    groups: VecDeque<PickSequence>,
 }
 
 impl InstructionQueue {
     pub fn new() -> Self {
         Self {
-            queue: VecDeque::new(),
+            groups: VecDeque::new(),
         }
     }
 
-    pub fn push(&mut self, cmd: RobotCommand) {
-        self.queue.push_back(cmd);
-    }
-
-    pub fn pop(&mut self) -> Option<RobotCommand> {
-        self.queue.pop_front()
+    fn push_sequence(&mut self, seq: PickSequence) {
+        self.groups.push_back(seq);
     }
 
     pub fn clear(&mut self) {
-        self.queue.clear();
+        self.groups.clear();
     }
 
+    /// Total pending commands across all groups.
     pub fn len(&self) -> usize {
-        self.queue.len()
+        self.groups.iter().map(|g| g.steps.len()).sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+        self.groups.is_empty()
+    }
+
+    /// The next command to execute at `now`, dropping any not-yet-started group
+    /// whose expiry has passed. `None` when nothing remains. A group already in
+    /// flight (`started`) is never dropped, even if it expires mid-sequence.
+    pub fn next_command(&mut self, now: Instant) -> Option<RobotCommand> {
+        while let Some(front) = self.groups.front_mut() {
+            if !front.started && now >= front.expiry {
+                let dropped = self.groups.pop_front().expect("front exists");
+                warn!(
+                    "Orchestrator: dropping expired pick sequence for object {} before it started \
+                     (belt has carried it away)",
+                    dropped.object_id
+                );
+                continue;
+            }
+            front.started = true;
+            match front.steps.pop_front() {
+                Some(cmd) => return Some(cmd),
+                None => {
+                    self.groups.pop_front(); // exhausted → advance to next group
+                }
+            }
+        }
+        None
     }
 }
 
@@ -339,9 +373,10 @@ impl Orchestrator {
                 }
             }
 
-            // pop() advances the queue and execute() commands the robot in
-            // both arms of the chain; the body runs only on a command failure.
-            if let Some(cmd) = self.queue.pop()
+            // next_command() drops any expired-before-start sequence (dropping
+            // whole groups, never mid-sequence) and returns the next command;
+            // the body runs only on a command failure.
+            if let Some(cmd) = self.queue.next_command(Instant::now())
                 && let Err(e) = self.execute(cmd).await
             {
                 error!(
@@ -514,14 +549,23 @@ impl Orchestrator {
             "Orchestrator: scheduling pick for object {} at ({:.1}, {:.1})",
             object.id, pick.x, pick.y
         );
-        self.queue.push(RobotCommand::MoveTo(travel)); // approach from above
-        self.queue.push(RobotCommand::MoveTo(pick)); // descend
-        self.queue.push(RobotCommand::Gripper(true));
-        self.queue
-            .push(RobotCommand::Wait(Duration::from_millis(150))); // let suction settle
-        self.queue.push(RobotCommand::MoveTo(travel)); // lift
-        self.queue.push(RobotCommand::MoveTo(drop_pos)); // to the assigned bin
-        self.queue.push(RobotCommand::Gripper(false));
+        let steps = VecDeque::from(vec![
+            RobotCommand::MoveTo(travel),                    // approach from above
+            RobotCommand::MoveTo(pick),                      // descend
+            RobotCommand::Gripper(true),                     // grab
+            RobotCommand::Wait(Duration::from_millis(150)),  // let suction settle
+            RobotCommand::MoveTo(travel),                    // lift
+            RobotCommand::MoveTo(drop_pos),                  // to the assigned bin
+            RobotCommand::Gripper(false),                    // release
+        ]);
+        self.queue.push_sequence(PickSequence {
+            object_id: object.id,
+            // Re-checked at execution time so a sequence stuck behind others is
+            // dropped rather than run onto belt the object has left.
+            expiry: object.seen_at + PICK_TTL,
+            started: false,
+            steps,
+        });
     }
 }
 
@@ -603,7 +647,7 @@ mod tests {
         let now = obj.seen_at + Duration::from_secs(1);
         orch.schedule_pick(obj, now);
         // Drain the queue through execute (the run loop, minus timing/locks).
-        while let Some(cmd) = orch.queue.pop() {
+        while let Some(cmd) = orch.queue.next_command(Instant::now()) {
             orch.execute(cmd).await.unwrap();
         }
         let travel = Position {
@@ -764,7 +808,7 @@ mod tests {
     /// second-to-last command; the last is the gripper release).
     fn drop_move(orch: &mut Orchestrator) -> Position {
         let mut moves = Vec::new();
-        while let Some(cmd) = orch.queue.pop() {
+        while let Some(cmd) = orch.queue.next_command(Instant::now()) {
             if let RobotCommand::MoveTo(p) = cmd {
                 moves.push(p);
             }
@@ -881,16 +925,86 @@ mod tests {
         );
     }
 
+    fn sequence(object_id: u64, expiry: Instant, steps: Vec<RobotCommand>) -> PickSequence {
+        PickSequence {
+            object_id,
+            expiry,
+            started: false,
+            steps: VecDeque::from(steps),
+        }
+    }
+
     #[test]
     fn instruction_queue_fifo_and_clear() {
+        let now = Instant::now();
+        let far = now + Duration::from_secs(60);
         let mut q = InstructionQueue::new();
         assert!(q.is_empty());
-        q.push(RobotCommand::Home);
-        q.push(RobotCommand::Gripper(true));
-        assert_eq!(q.len(), 2);
-        assert!(matches!(q.pop(), Some(RobotCommand::Home)));
+        q.push_sequence(sequence(1, far, vec![RobotCommand::Home, RobotCommand::Gripper(true)]));
+        q.push_sequence(sequence(2, far, vec![RobotCommand::Gripper(false)]));
+        assert_eq!(q.len(), 3, "total commands across groups");
+        // FIFO across and within groups.
+        assert!(matches!(q.next_command(now), Some(RobotCommand::Home)));
+        assert!(matches!(q.next_command(now), Some(RobotCommand::Gripper(true))));
+        assert!(matches!(q.next_command(now), Some(RobotCommand::Gripper(false))));
+        assert!(q.next_command(now).is_none());
+        q.push_sequence(sequence(3, far, vec![RobotCommand::Home]));
         q.clear();
-        assert!(q.pop().is_none());
+        assert!(q.next_command(now).is_none() && q.is_empty());
+    }
+
+    #[test]
+    fn expired_sequence_is_dropped_before_it_starts() {
+        // Enqueued fresh, but by execution time the TTL has passed: the whole
+        // sequence is dropped, not run onto belt the object has left (#3).
+        let mut orch = test_orchestrator();
+        let obj = object_at(50.0, 0.0);
+        let seen = obj.seen_at;
+        orch.schedule_pick(obj, seen + Duration::from_secs(1));
+        assert_eq!(orch.queue.len(), 7);
+        assert!(
+            orch.queue.next_command(seen + Duration::from_secs(5)).is_none(),
+            "an expired-before-start sequence must be dropped whole"
+        );
+        assert!(orch.queue.is_empty());
+    }
+
+    #[test]
+    fn a_started_sequence_is_never_dropped_mid_flight() {
+        // Once the first command is taken, later expiry must NOT abort the rest
+        // (the gripper may be holding a part).
+        let mut orch = test_orchestrator();
+        let obj = object_at(50.0, 0.0);
+        let seen = obj.seen_at;
+        orch.schedule_pick(obj, seen + Duration::from_secs(1));
+        // First command taken while fresh → group started.
+        assert!(orch.queue.next_command(seen + Duration::from_secs(1)).is_some());
+        // TTL passes mid-sequence: the remaining commands still run.
+        assert!(
+            orch.queue.next_command(seen + Duration::from_secs(5)).is_some(),
+            "a started sequence runs to completion despite expiry"
+        );
+    }
+
+    #[test]
+    fn expired_group_is_skipped_to_reach_a_still_valid_one() {
+        let now = Instant::now();
+        let mut q = InstructionQueue::new();
+        // First group already expired, second still valid.
+        q.push_sequence(sequence(
+            1,
+            now - Duration::from_secs(1),
+            vec![RobotCommand::MoveTo(ORIGIN)],
+        ));
+        q.push_sequence(sequence(
+            2,
+            now + Duration::from_secs(60),
+            vec![RobotCommand::Gripper(true)],
+        ));
+        // The expired group is dropped whole; the next command comes from the
+        // still-valid group.
+        assert!(matches!(q.next_command(now), Some(RobotCommand::Gripper(true))));
+        assert!(q.next_command(now).is_none());
     }
 
     // --- Run-loop integration tests -------------------------------------
