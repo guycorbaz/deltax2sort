@@ -89,8 +89,8 @@ fn log_config_summary(args: &Args, c: &AppConfig) {
         c.camera.device_id, c.camera.width, c.camera.height, c.camera.fps, c.camera.fourcc,
     );
     info!(
-        "Sorting drop ({}, {}, {}) | Vision: threshold {} area [{},{}] invert {} {} mm/px",
-        c.sorting.drop_x, c.sorting.drop_y, c.sorting.drop_z,
+        "Sorting: {} bin(s), {} class assignment(s) | Vision: threshold {} area [{},{}] invert {} {} mm/px",
+        c.sorting.bins.len(), c.sorting.assignments.len(),
         c.vision.threshold, c.vision.min_area, c.vision.max_area, c.vision.invert, c.vision.mm_per_px,
     );
 }

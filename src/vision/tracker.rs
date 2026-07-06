@@ -133,10 +133,11 @@ impl Tracker {
         }
     }
 
-    /// Bounding box + class of every track matched in the current frame
+    /// Bounding box + class name of every track matched in the current frame
     /// (`missed_frames == 0`), for the live overlay. Only currently-visible
-    /// tracks are returned, so a box is never drawn over empty belt.
-    pub fn current_overlays(&self) -> Vec<(Rect, super::ObjectClass)> {
+    /// tracks are returned, so a box is never drawn over empty belt. The class
+    /// is `None` until the object is recognised.
+    pub fn current_overlays(&self) -> Vec<(Rect, Option<super::ClassName>)> {
         self.tracks
             .iter()
             .filter(|t| t.missed_frames == 0)
@@ -162,7 +163,6 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vision::ObjectClass;
     use std::time::{Instant, SystemTime};
 
     fn detection_at(x: i32, y: i32) -> DetectedObject {
@@ -170,7 +170,7 @@ mod tests {
             id: 0,
             rect: Rect::new(x, y, 20, 20),
             world_pos: None,
-            class: ObjectClass::Unknown,
+            class: None,
             confidence: 0.0,
             timestamp: SystemTime::now(),
             seen_at: Instant::now(),

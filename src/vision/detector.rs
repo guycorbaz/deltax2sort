@@ -1,5 +1,4 @@
 use super::DetectedObject;
-use super::ObjectClass;
 use crate::app_config::VisionConfig;
 use anyhow::Result;
 use opencv::{
@@ -83,7 +82,7 @@ impl BlobDetector {
                     id: 0, // Assigned by Tracker
                     rect,
                     world_pos: None, // Assigned by Calibrator
-                    class: ObjectClass::Unknown,
+                    class: None,     // Assigned by the classifier (Phase B)
                     confidence: 0.0,
                     timestamp: SystemTime::now(),
                     seen_at: captured_at,

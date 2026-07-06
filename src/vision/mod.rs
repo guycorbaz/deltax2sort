@@ -8,20 +8,12 @@ use crate::hardware::Position;
 use opencv::core::Rect;
 use std::time::{Instant, SystemTime};
 
-#[derive(Debug, Clone)]
-pub enum ObjectClass {
-    Unknown,
-    // Classifier is a stub (docs/TODO.md): concrete brick classes are not
-    // produced yet, only Unknown.
-    #[allow(dead_code)]
-    Brick2x4,
-    #[allow(dead_code)]
-    Brick2x2,
-    #[allow(dead_code)]
-    Brick4x4,
-    #[allow(dead_code)]
-    Plate2x4,
-}
+/// The recognised class of an object, as a learned-catalogue label. Identity
+/// is the class name — the key the sorting `assignments` map to a bin. Classes
+/// are learned independently of bins (see the object catalogue), so this is a
+/// free-form name, not a fixed enum. `None` on a [`DetectedObject`] means
+/// unrecognised: it is not sorted, and rides the belt to the end catch bin.
+pub type ClassName = String;
 
 #[derive(Debug, Clone)]
 pub struct DetectedObject {
@@ -32,10 +24,11 @@ pub struct DetectedObject {
     /// Object center in robot coordinates (mm); z is always 0 (belt plane),
     /// the pick height comes from configuration.
     pub world_pos: Option<Position>,
-    // class/confidence are populated once the classifier leaves stub state;
-    // timestamp is carried for future logging/UI. None is read yet.
-    #[allow(dead_code)]
-    pub class: ObjectClass,
+    /// Recognised class name, or `None` when unrecognised. Drives sorting: an
+    /// object is picked only if its class is assigned to a bin.
+    pub class: Option<ClassName>,
+    // Populated once the classifier leaves stub state (Phase B); carried for
+    // the UI/logging. Not read yet.
     #[allow(dead_code)]
     pub confidence: f32,
     /// Wall-clock capture time — for logging only (can go backwards under

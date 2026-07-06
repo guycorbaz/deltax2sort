@@ -2,7 +2,7 @@ use crate::app_config::AppConfig;
 use crate::hardware::{Position, RobotController, WorkspaceLimits};
 use crate::vision::DetectedObject;
 use anyhow::Result;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -173,7 +173,10 @@ pub struct Orchestrator {
     limits: WorkspaceLimits,
     z_travel: f32,
     z_pick: f32,
-    drop_pos: Position,
+    /// Drop position per recognised class. A pick is scheduled only for a
+    /// class present here; anything else (unrecognised, or recognised but
+    /// unassigned) is left on the belt to reach the end catch bin.
+    class_drops: std::collections::HashMap<String, Position>,
     robot: Arc<Mutex<Box<dyn RobotController>>>,
 }
 
@@ -211,11 +214,12 @@ impl Orchestrator {
             limits: config.robot.workspace_limits(),
             z_travel: config.robot.z_travel,
             z_pick: config.robot.z_pick,
-            drop_pos: Position {
-                x: config.sorting.drop_x,
-                y: config.sorting.drop_y,
-                z: config.sorting.drop_z,
-            },
+            class_drops: config
+                .sorting
+                .class_drop_positions()
+                .into_iter()
+                .map(|(class, (x, y, z))| (class, Position { x, y, z }))
+                .collect(),
             robot,
         };
         (tx, state_rx, error_rx, orchestrator)
@@ -465,6 +469,29 @@ impl Orchestrator {
             );
             return;
         };
+        // Route by recognised class: only objects whose class is assigned to a
+        // bin are picked. An unrecognised object (class None) or a recognised
+        // one with no bin assignment is deliberately left on the belt to reach
+        // the end catch bin — "do nothing" is the safe default.
+        let drop_pos = match &object.class {
+            Some(class) => match self.class_drops.get(class) {
+                Some(&drop) => drop,
+                None => {
+                    debug!(
+                        "Orchestrator: object {} class '{}' has no bin assignment — leaving it on the belt",
+                        object.id, class
+                    );
+                    return;
+                }
+            },
+            None => {
+                debug!(
+                    "Orchestrator: object {} unrecognised — leaving it on the belt",
+                    object.id
+                );
+                return;
+            }
+        };
         // Z comes from configuration, not from vision (which reports the
         // belt plane as z = 0).
         let pick = Position {
@@ -493,7 +520,7 @@ impl Orchestrator {
         self.queue
             .push(RobotCommand::Wait(Duration::from_millis(150))); // let suction settle
         self.queue.push(RobotCommand::MoveTo(travel)); // lift
-        self.queue.push(RobotCommand::MoveTo(self.drop_pos));
+        self.queue.push(RobotCommand::MoveTo(drop_pos)); // to the assigned bin
         self.queue.push(RobotCommand::Gripper(false));
     }
 }
@@ -501,7 +528,7 @@ impl Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vision::ObjectClass;
+    use crate::app_config::{Assignment, BinConfig};
     use opencv::core::Rect;
     use std::time::SystemTime;
 
@@ -510,13 +537,37 @@ mod tests {
         y: 0.0,
         z: 0.0,
     };
+    /// The class every test object carries, assigned to a bin at [`DROP`].
+    const PART: &str = "part";
+
+    /// Config with a single bin "bin-a" at (150, 0, -100) and the `PART` class
+    /// assigned to it — so `object_at` objects are picked and dropped there,
+    /// matching the pre-routing tests' expectations.
+    fn test_config() -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.sorting.bins = vec![BinConfig {
+            id: "bin-a".into(),
+            x: 150.0,
+            y: 0.0,
+            z: -100.0,
+        }];
+        cfg.sorting.assignments = vec![Assignment {
+            class: PART.into(),
+            bin: "bin-a".into(),
+        }];
+        cfg
+    }
 
     fn object_at(x: f32, y: f32) -> DetectedObject {
+        object_of_class(x, y, Some(PART.to_string()))
+    }
+
+    fn object_of_class(x: f32, y: f32, class: Option<String>) -> DetectedObject {
         DetectedObject {
             id: 1,
             rect: Rect::new(0, 0, 10, 10),
             world_pos: Some(Position { x, y, z: 0.0 }),
-            class: ObjectClass::Unknown,
+            class,
             confidence: 0.0,
             timestamp: SystemTime::now(),
             seen_at: Instant::now(),
@@ -526,7 +577,7 @@ mod tests {
     fn test_orchestrator() -> Orchestrator {
         let robot: Arc<Mutex<Box<dyn RobotController>>> =
             Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
-        let (_tx, _state_rx, _error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (_tx, _state_rx, _error_rx, orch) = Orchestrator::new(&test_config(), robot);
         orch
     }
 
@@ -539,7 +590,7 @@ mod tests {
         let mock = crate::hardware::MockRobot::new();
         let log = mock.command_log();
         let robot: Arc<Mutex<Box<dyn RobotController>>> = Arc::new(Mutex::new(Box::new(mock)));
-        let (_tx, _state_rx, _error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (_tx, _state_rx, _error_rx, orch) = Orchestrator::new(&test_config(), robot);
         (orch, log)
     }
 
@@ -572,7 +623,7 @@ mod tests {
                 MoveTo(pick),        // descend
                 Gripper(true),       // grab (Wait is not a robot command)
                 MoveTo(travel),      // lift
-                MoveTo(orch.drop_pos),
+                MoveTo(DROP),        // to the assigned bin (bin-a)
                 Gripper(false), // release over the drop
             ],
         );
@@ -657,6 +708,72 @@ mod tests {
     }
 
     #[test]
+    fn unrecognised_object_is_not_scheduled() {
+        // class None → not sorted, rides the belt to the catch bin.
+        let mut orch = test_orchestrator();
+        let object = object_of_class(50.0, 0.0, None);
+        let now = object.seen_at + Duration::from_secs(1);
+        orch.schedule_pick(object, now);
+        assert!(orch.queue.is_empty(), "unrecognised object must not be picked");
+    }
+
+    #[test]
+    fn recognised_but_unassigned_class_is_not_scheduled() {
+        // Known class, but no bin assigned to it → also passes to the catch bin.
+        let mut orch = test_orchestrator();
+        let object = object_of_class(50.0, 0.0, Some("no-bin-for-this".into()));
+        let now = object.seen_at + Duration::from_secs(1);
+        orch.schedule_pick(object, now);
+        assert!(
+            orch.queue.is_empty(),
+            "a class with no bin assignment must not be picked"
+        );
+    }
+
+    #[test]
+    fn objects_route_to_their_assigned_bin() {
+        use crate::app_config::{Assignment, BinConfig};
+        // Two classes → two different bins.
+        let mut cfg = AppConfig::default();
+        cfg.sorting.bins = vec![
+            BinConfig { id: "left".into(), x: -120.0, y: 0.0, z: -100.0 },
+            BinConfig { id: "right".into(), x: 120.0, y: 0.0, z: -100.0 },
+        ];
+        cfg.sorting.assignments = vec![
+            Assignment { class: "red".into(), bin: "left".into() },
+            Assignment { class: "blue".into(), bin: "right".into() },
+        ];
+        let robot: Arc<Mutex<Box<dyn RobotController>>> =
+            Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
+        let (_tx, _s, _e, mut orch) = Orchestrator::new(&cfg, robot);
+
+        let red = object_of_class(20.0, 0.0, Some("red".into()));
+        let now = red.seen_at + Duration::from_secs(1);
+        orch.schedule_pick(red, now);
+        // The 6th command (index 5) is the drop move.
+        let red_drop = drop_move(&mut orch);
+        assert_eq!(red_drop, Position { x: -120.0, y: 0.0, z: -100.0 });
+
+        let blue = object_of_class(20.0, 0.0, Some("blue".into()));
+        orch.schedule_pick(blue, now);
+        let blue_drop = drop_move(&mut orch);
+        assert_eq!(blue_drop, Position { x: 120.0, y: 0.0, z: -100.0 });
+    }
+
+    /// Drain a scheduled pick sequence and return its drop-move target (the
+    /// second-to-last command; the last is the gripper release).
+    fn drop_move(orch: &mut Orchestrator) -> Position {
+        let mut moves = Vec::new();
+        while let Some(cmd) = orch.queue.pop() {
+            if let RobotCommand::MoveTo(p) = cmd {
+                moves.push(p);
+            }
+        }
+        // moves: travel, pick, travel(lift), drop → the last MoveTo is the drop.
+        *moves.last().expect("a pick sequence has move commands")
+    }
+
+    #[test]
     fn pick_while_paused_is_dropped() {
         let mut orch = test_orchestrator();
         orch.handle_message(OrchestratorMsg::Pause);
@@ -703,7 +820,7 @@ mod tests {
     fn state_watch_publishes_confirmed_transitions() {
         let robot: Arc<Mutex<Box<dyn RobotController>>> =
             Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
-        let (_tx, state_rx, _error_rx, mut orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (_tx, state_rx, _error_rx, mut orch) = Orchestrator::new(&test_config(), robot);
         assert_eq!(*state_rx.borrow(), OrchestratorState::Paused);
         orch.handle_message(OrchestratorMsg::Resume);
         assert_eq!(*state_rx.borrow(), OrchestratorState::Running);
@@ -754,7 +871,7 @@ mod tests {
     fn report_error_reaches_the_operator_banner_channel() {
         let robot: Arc<Mutex<Box<dyn RobotController>>> =
             Arc::new(Mutex::new(Box::new(crate::hardware::MockRobot::new())));
-        let (_tx, _state_rx, error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (_tx, _state_rx, error_rx, orch) = Orchestrator::new(&test_config(), robot);
         // Starts empty so a fresh boot shows no banner.
         assert!(error_rx.borrow().is_none());
         orch.report_error("Robot command failed: boom. Sorting paused.".to_string());
@@ -814,7 +931,7 @@ mod tests {
         watch::Receiver<OrchestratorState>,
         watch::Receiver<Option<String>>,
     ) {
-        let (tx, state_rx, error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (tx, state_rx, error_rx, orch) = Orchestrator::new(&test_config(), robot);
         let handle = tokio::spawn(orch.run());
         for m in msgs {
             tx.send(m).expect("orchestrator receiver alive");
@@ -1045,7 +1162,7 @@ mod tests {
         // run, otherwise it would (correctly) preempt it and there would be no
         // recorded position to park from. So we let the pick finish first.
         let (robot, log) = mock_robot_with_log();
-        let (tx, _state_rx, _err, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let (tx, _state_rx, _err, orch) = Orchestrator::new(&test_config(), robot);
         let handle = tokio::spawn(orch.run());
         tx.send(OrchestratorMsg::Resume).unwrap();
         tx.send(OrchestratorMsg::Pick(object_at(50.0, 0.0))).unwrap();

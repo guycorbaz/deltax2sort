@@ -105,19 +105,48 @@ adopts) the resolution and frame rate actually in effect at connection
 time. Calibration is always based on the effective resolution.
 
 \section{Section \texttt{[sorting]}}
-\index{configuration!sorting@\texttt{[sorting]}}\index{drop bin}%
+\index{configuration!sorting@\texttt{[sorting]}}\index{drop bin}\index{bin}%
+Sorting is two independent layers. \textbf{Recognition} (the learned object
+catalogue) answers \emph{what is it}; \textbf{assignment} answers \emph{which
+bin does that type go to}. Keeping them separate means the same catalogue can
+drive different bin layouts, and you can re-map a class to another bin without
+re-teaching it. A class with no assignment --- and any unrecognised object ---
+is \emph{not} picked: it stays on the belt and reaches the catch bin at the
+end. That "do nothing" default is what keeps an uncertain object safe.
+
+Bins are declared as repeated \cfg{[[sorting.bins]]} tables (as many as your
+rig has, each at a fixed, measured position inside the workspace), and
+assignments as repeated \cfg{[[sorting.assignments]]} tables mapping a class
+name to a bin \cfg{id}.
 \begin{table}[h]
   \centering
-  \begin{tabularx}{\textwidth}{KTD}
+  \begin{tabularx}{\textwidth}{KD}
     \toprule
-    \textbf{Key} & \textbf{Default} & \textbf{Meaning} \\
+    \textbf{Key} & \textbf{Meaning} \\
     \midrule
-    drop\_x, drop\_y, drop\_z & 150, 0, $-100$ & Position of the drop bin.
-      Must be inside the robot workspace. \\
+    \cfg{[[sorting.bins]]} \cfg{id} & Stable bin identifier, referenced by
+      assignments. Must be unique. \\
+    \cfg{[[sorting.bins]]} \cfg{x, y, z} & Drop position of that bin, in robot
+      millimetres; must be inside the workspace. \\
+    \cfg{[[sorting.assignments]]} \cfg{class} & Learned class name to route. \\
+    \cfg{[[sorting.assignments]]} \cfg{bin} & The \cfg{id} of the bin it goes
+      to (must exist). \\
     \bottomrule
   \end{tabularx}
   \caption{\cfg{[sorting]} keys}
 \end{table}
+
+\begin{lstlisting}[language=TOML]
+[[sorting.bins]]
+id = "bin-1"
+x = 120.0
+y = 60.0
+z = -100.0
+
+[[sorting.assignments]]
+class = "brick-2x4-red"
+bin = "bin-1"
+\end{lstlisting}
 
 \section{Section \texttt{[vision]}}
 \index{configuration!vision@\texttt{[vision]}}\index{threshold}\index{detection}%
@@ -216,10 +245,15 @@ device_id = 0
 width = 1280
 height = 720
 
-[sorting]
-drop_x = 150.0
-drop_y = 0.0
-drop_z = -100.0
+[[sorting.bins]]
+id = "bin-1"
+x = 120.0
+y = 60.0
+z = -100.0
+
+[[sorting.assignments]]
+class = "brick-2x4-red"
+bin = "bin-1"
 
 [vision]
 threshold = 60.0

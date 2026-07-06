@@ -1,7 +1,7 @@
 use super::calibration::{CalibrationParams, CoordinateTransformer};
 use super::detector::BlobDetector;
 use super::tracker::Tracker;
-use super::{DetectedObject, ObjectClass};
+use super::{ClassName, DetectedObject};
 use anyhow::{Context, Result, anyhow};
 use log::{debug, error, info, warn};
 use opencv::core::{Mat, Scalar, Size};
@@ -20,12 +20,12 @@ pub type FrameImage = SharedPixelBuffer<Rgb8Pixel>;
 const DISPLAY_MAX_W: u32 = 640;
 const DISPLAY_MAX_H: u32 = 480;
 
-/// Overlay colours in OpenCV BGR. Known parts are green; anything still
-/// unclassified (today: everything — the classifier is a stub) is yellow.
-fn overlay_color(class: &ObjectClass) -> Scalar {
+/// Overlay colours in OpenCV BGR. Recognised parts are green; anything still
+/// unrecognised (today: everything — the classifier is a stub) is yellow.
+fn overlay_color(class: &Option<ClassName>) -> Scalar {
     match class {
-        ObjectClass::Unknown => Scalar::new(0.0, 255.0, 255.0, 0.0), // yellow (BGR)
-        _ => Scalar::new(0.0, 255.0, 0.0, 0.0),                      // green
+        Some(_) => Scalar::new(0.0, 255.0, 0.0, 0.0),  // green (BGR)
+        None => Scalar::new(0.0, 255.0, 255.0, 0.0),   // yellow
     }
 }
 
@@ -153,14 +153,30 @@ impl VisionPipeline {
     pub fn render_display_frame(&self, frame: &Mat) -> Result<FrameImage> {
         let mut annotated = frame.clone();
         for (rect, class) in self.tracker.current_overlays() {
+            let color = overlay_color(&class);
             imgproc::rectangle(
                 &mut annotated,
                 rect,
-                overlay_color(&class),
+                color,
                 2, // px, at capture resolution — scaled down with the frame
                 imgproc::LINE_8,
                 0,
             )?;
+            // Label recognised objects with their class name, just above the
+            // box (unrecognised ones stay unlabelled — nothing to name yet).
+            if let Some(name) = &class {
+                imgproc::put_text(
+                    &mut annotated,
+                    name,
+                    opencv::core::Point::new(rect.x, (rect.y - 8).max(12)),
+                    imgproc::FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    color,
+                    2,
+                    imgproc::LINE_8,
+                    false,
+                )?;
+            }
         }
         mat_to_frame_image(&annotated, DISPLAY_MAX_W, DISPLAY_MAX_H)
     }

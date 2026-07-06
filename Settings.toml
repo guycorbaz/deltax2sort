@@ -43,10 +43,32 @@ fps = 30
 # fourcc = "MJPG"
 
 [sorting]
-# Drop bin position (must be inside the robot workspace).
-drop_x = 150.0
-drop_y = 0.0
-drop_z = -100.0
+# Sorting has two independent layers: physical drop bins, and an assignment of
+# learned object classes to those bins. Object recognition (the learned
+# catalogue) is kept separate, so the same catalogue can drive different bin
+# layouts. A class with no assignment — and any unrecognised object — is NOT
+# picked: it rides the belt to the end catch bin. That "do nothing" default is
+# what makes an uncertain object safe.
+#
+# Drop bins around the belt (as many as you have, each at a fixed measured
+# position inside the robot workspace). Uncomment and set to your rig:
+# [[sorting.bins]]
+# id = "bin-1"
+# x = 120.0
+# y = 60.0
+# z = -100.0
+#
+# [[sorting.bins]]
+# id = "bin-2"
+# x = -120.0
+# y = 60.0
+# z = -100.0
+#
+# Which learned class goes to which bin (by class name → bin id). Built as you
+# teach the system; a class not listed here is left on the belt:
+# [[sorting.assignments]]
+# class = "brick-2x4-red"
+# bin = "bin-1"
 
 [vision]
 # Fixed binary threshold (0-255) applied after grayscale + blur.

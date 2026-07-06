@@ -71,12 +71,51 @@ pub struct CameraConfig {
     pub fourcc: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// Sorting is two independent layers: physical drop bins around the belt, and
+/// an assignment of learned classes to those bins. A class with no assignment
+/// (and any unrecognised object) is simply not picked — it rides the belt to
+/// the end catch bin. Object recognition (the learned catalogue) is deliberately
+/// kept separate from bins, so the same catalogue can drive different bin
+/// layouts.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct SortingConfig {
-    pub drop_x: f32,
-    pub drop_y: f32,
-    pub drop_z: f32,
+    /// Drop bins around the belt. Count and positions are fully configurable.
+    pub bins: Vec<BinConfig>,
+    /// Which learned class goes to which bin (by bin `id`). Classes absent
+    /// here are not sorted.
+    pub assignments: Vec<Assignment>,
+}
+
+/// One physical drop bin: a stable `id` (referenced by assignments) and a drop
+/// position in robot coordinates (mm), which must lie inside the workspace.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BinConfig {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+/// Maps a learned class (by name) to a bin (by `id`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Assignment {
+    pub class: String,
+    pub bin: String,
+}
+
+impl SortingConfig {
+    /// Resolve each assigned class to its drop position, for the orchestrator.
+    /// Assignments referencing an unknown bin are dropped (validation rejects
+    /// those, so this only happens on an unvalidated config).
+    pub fn class_drop_positions(&self) -> std::collections::HashMap<String, (f32, f32, f32)> {
+        let bins: std::collections::HashMap<&str, (f32, f32, f32)> =
+            self.bins.iter().map(|b| (b.id.as_str(), (b.x, b.y, b.z))).collect();
+        self.assignments
+            .iter()
+            .filter_map(|a| bins.get(a.bin.as_str()).map(|&p| (a.class.clone(), p)))
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -143,16 +182,6 @@ fn default_camera_fps() -> u32 {
 }
 fn default_mm_per_px() -> f32 {
     0.5
-}
-
-impl Default for SortingConfig {
-    fn default() -> Self {
-        Self {
-            drop_x: 150.0,
-            drop_y: 0.0,
-            drop_z: -100.0,
-        }
-    }
 }
 
 impl Default for VisionConfig {
@@ -306,19 +335,43 @@ impl AppConfig {
             c.speed_mm_s.is_finite(),
             "conveyor.speed_mm_s must be finite (NaN/inf poisons belt-shift and the planner)"
         );
+        // Sorting bins: every drop position must be reachable, ids unique, and
+        // every assignment must target a bin that exists (a typo'd bin would
+        // silently drop the class from sorting otherwise).
         let s = &self.sorting;
-        ensure!(
-            s.drop_x >= r.x_min
-                && s.drop_x <= r.x_max
-                && s.drop_y >= r.y_min
-                && s.drop_y <= r.y_max
-                && s.drop_z >= r.z_min
-                && s.drop_z <= r.z_max,
-            "sorting drop position ({}, {}, {}) is outside the robot workspace",
-            s.drop_x,
-            s.drop_y,
-            s.drop_z
-        );
+        let mut seen_ids = std::collections::HashSet::new();
+        for b in &s.bins {
+            ensure!(
+                !b.id.trim().is_empty(),
+                "every sorting bin needs a non-empty id"
+            );
+            ensure!(
+                seen_ids.insert(b.id.as_str()),
+                "duplicate sorting bin id {:?}",
+                b.id
+            );
+            ensure!(
+                b.x >= r.x_min
+                    && b.x <= r.x_max
+                    && b.y >= r.y_min
+                    && b.y <= r.y_max
+                    && b.z >= r.z_min
+                    && b.z <= r.z_max,
+                "sorting bin {:?} position ({}, {}, {}) is outside the robot workspace",
+                b.id,
+                b.x,
+                b.y,
+                b.z
+            );
+        }
+        for a in &s.assignments {
+            ensure!(
+                seen_ids.contains(a.bin.as_str()),
+                "sorting assignment for class {:?} targets unknown bin {:?}",
+                a.class,
+                a.bin
+            );
+        }
         ensure!(
             self.camera.width > 0 && self.camera.height > 0,
             "camera resolution must be non-zero"
@@ -376,7 +429,51 @@ mod tests {
         let back: AppConfig = toml::from_str(&text).unwrap();
         back.validate().unwrap();
         assert_eq!(back.robot.z_pick, cfg.robot.z_pick);
-        assert_eq!(back.sorting.drop_x, cfg.sorting.drop_x);
+        assert_eq!(back.sorting.bins.len(), cfg.sorting.bins.len());
+    }
+
+    fn config_with_bins() -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.sorting.bins = vec![
+            BinConfig { id: "bin-1".into(), x: 100.0, y: 0.0, z: -100.0 },
+            BinConfig { id: "bin-2".into(), x: -100.0, y: 0.0, z: -100.0 },
+        ];
+        cfg.sorting.assignments = vec![Assignment {
+            class: "brick-2x4".into(),
+            bin: "bin-1".into(),
+        }];
+        cfg
+    }
+
+    #[test]
+    fn valid_bins_and_assignments_pass_and_resolve() {
+        let cfg = config_with_bins();
+        cfg.validate().unwrap();
+        let map = cfg.sorting.class_drop_positions();
+        assert_eq!(map.get("brick-2x4"), Some(&(100.0, 0.0, -100.0)));
+        // Unassigned class is absent → the orchestrator lets it pass.
+        assert!(!map.contains_key("plate-1x1"));
+    }
+
+    #[test]
+    fn validate_rejects_bin_outside_workspace() {
+        let mut cfg = config_with_bins();
+        cfg.sorting.bins[0].x = 500.0; // beyond the workspace
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_bin_id() {
+        let mut cfg = config_with_bins();
+        cfg.sorting.bins[1].id = "bin-1".into();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_assignment_to_unknown_bin() {
+        let mut cfg = config_with_bins();
+        cfg.sorting.assignments[0].bin = "does-not-exist".into();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
@@ -429,12 +526,6 @@ mod tests {
         assert!(cfg.validate().is_err());
     }
 
-    #[test]
-    fn validate_rejects_drop_position_outside_workspace() {
-        let mut cfg = AppConfig::default();
-        cfg.sorting.drop_x = 500.0;
-        assert!(cfg.validate().is_err());
-    }
 
     #[test]
     fn validate_rejects_zero_feed_rate() {

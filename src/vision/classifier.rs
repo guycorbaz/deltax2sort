@@ -1,12 +1,14 @@
 // Entirely stub code: classification is a later milestone (docs/TODO.md).
 #![allow(dead_code)]
 
-use super::ObjectClass;
+use super::ClassName;
 use anyhow::Result;
 use opencv::core::Mat;
 
 pub trait Classifier: Send + Sync {
-    fn classify(&self, image: &Mat) -> Result<(ObjectClass, f32)>;
+    /// Recognise the object in `image`, returning `(class, confidence)`.
+    /// `None` = unrecognised (rides the belt to the catch bin).
+    fn classify(&self, image: &Mat) -> Result<(Option<ClassName>, f32)>;
 }
 
 pub struct ColorShapeClassifier;
@@ -18,11 +20,12 @@ impl ColorShapeClassifier {
 }
 
 impl Classifier for ColorShapeClassifier {
-    fn classify(&self, _image: &Mat) -> Result<(ObjectClass, f32)> {
-        // Placeholder until real classification (color histogram / ONNX)
-        // lands. Deliberately returns Unknown at zero confidence so a stub
-        // can never route bricks into the wrong bin.
-        Ok((ObjectClass::Unknown, 0.0))
+    fn classify(&self, _image: &Mat) -> Result<(Option<ClassName>, f32)> {
+        // Placeholder until real recognition (embeddings + nearest-neighbour
+        // over the learned catalogue) lands in Phase B. Deliberately returns
+        // None at zero confidence so a stub can never route a part into the
+        // wrong bin — an unrecognised object is simply not picked.
+        Ok((None, 0.0))
     }
 }
 
