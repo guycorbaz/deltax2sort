@@ -94,6 +94,14 @@ retries every 500~ms without affecting robot control.
   \caption{UI controls}
 \end{table}
 
+In the \emph{workstation} profile (\S\ref{sec:calibration} and
+\cfg{[ui].profile}), when recognition is on and an object is not recognised, a
+\textbf{learning panel} appears: it shows the object's thumbnail and the
+nearest known classes. The operator either assigns it to one of those classes
+or types a new class name and creates it; the example is added to the
+catalogue and saved. Unlabelled (\emph{Skip}) objects are simply left on the
+belt. This is how the catalogue is taught before it is copied to the Pi.
+
 The status line reflects the orchestrator's \emph{confirmed} state —
 \emph{Ready (paused)}, \emph{Sorting}, or \emph{E-STOP -- HOME REQUIRED}
 — never merely what a button press requested. The dashboard also shows

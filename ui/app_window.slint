@@ -3,7 +3,15 @@ import {
     VerticalBox,
     HorizontalBox,
     StandardListView,
+    LineEdit,
 } from "std-widgets.slint";
+
+// One candidate class offered when labelling an unknown object: its name and a
+// human-readable similarity (e.g. "72%").
+export struct Candidate {
+    name: string,
+    score: string,
+}
 
 export component AppWindow inherits Window {
     title: "Delta X2 Part Sorting System";
@@ -44,9 +52,20 @@ export component AppWindow inherits Window {
     // Manual gripper state (operator toggle). Set optimistically on click;
     // failures surface through error-text.
     in property <bool> gripper-on: false;
-    // True in the "workstation" profile: unlocks the learning UI (added in a
-    // later phase). The Pi/kiosk profile leaves it false (sorting only).
+    // True in the "workstation" profile: unlocks the learning UI. The Pi/kiosk
+    // profile leaves it false (sorting only).
     in property <bool> workstation: false;
+    // Learning UI (workstation): shown when an unrecognised object is waiting
+    // to be labelled. `learn-crop` is its thumbnail; `learn-candidates` the
+    // nearest known classes to offer.
+    in property <bool> learning-active: false;
+    in property <image> learn-crop;
+    in property <[Candidate]> learn-candidates;
+    // The operator labelled the pending object: assign it to an existing class,
+    // create a new class with this name, or skip it.
+    callback learn-assign(string);
+    callback learn-create(string);
+    callback learn-skip();
 
     callback start-clicked();
     callback stop-clicked();
@@ -281,6 +300,84 @@ export component AppWindow inherits Window {
                                 horizontal-alignment: center;
                                 vertical-alignment: top;
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Learning overlay (workstation profile only): teach an unrecognised
+    // object by assigning it to a known class or creating a new one.
+    if (workstation && learning-active): Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000dd;
+
+        Rectangle {
+            width: 460px;
+            height: 420px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #1e1e1e;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: #444444;
+
+            VerticalBox {
+                padding: 16px;
+                spacing: 8px;
+
+                Text {
+                    text: "Unknown object — teach it";
+                    color: #ffffff;
+                    font-size: 18px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                Image {
+                    source: learn-crop;
+                    height: 120px;
+                    image-fit: contain;
+                }
+
+                Text {
+                    text: "Assign to a known class:";
+                    color: #aaaaaa;
+                    font-size: 12px;
+                }
+
+                for candidate in learn-candidates: Button {
+                    text: candidate.name + "  (" + candidate.score + ")";
+                    clicked => {
+                        root.learn-assign(candidate.name);
+                    }
+                }
+
+                Text {
+                    text: "…or create a new class:";
+                    color: #aaaaaa;
+                    font-size: 12px;
+                }
+
+                new-class-name := LineEdit {
+                    placeholder-text: "new class name";
+                }
+
+                HorizontalBox {
+                    padding: 0px;
+                    Button {
+                        text: "Create";
+                        clicked => {
+                            root.learn-create(new-class-name.text);
+                        }
+                    }
+
+                    Button {
+                        text: "Skip";
+                        clicked => {
+                            root.learn-skip();
                         }
                     }
                 }

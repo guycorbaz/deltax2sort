@@ -113,6 +113,42 @@ fn apply_profile(ui: &AppWindow, profile: app_config::UiProfile) {
     }
 }
 
+/// Add the pending unrecognised object to the catalogue under `class` and save.
+/// A no-op if recognition is off, the name is blank, or nothing is pending.
+fn teach_example(
+    catalog: &Option<vision::embedder::SharedCatalog>,
+    catalog_path: &str,
+    pending: &Arc<std::sync::Mutex<Option<Vec<f32>>>>,
+    class: &str,
+) {
+    let class = class.trim();
+    if class.is_empty() {
+        warn!("Learning: empty class name ignored");
+        return;
+    }
+    let Some(catalog) = catalog else { return };
+    let embedding = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    let Some(embedding) = embedding else {
+        warn!("Learning: no pending object to label");
+        return;
+    };
+    let mut cat = catalog
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cat.add(class, &embedding);
+    match cat.save(catalog_path) {
+        Ok(()) => info!(
+            "Learning: taught class '{}' ({} example(s) total)",
+            class,
+            cat.len()
+        ),
+        Err(e) => error!("Learning: could not save catalogue to {catalog_path}: {e:#}"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -243,6 +279,10 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    // Shared catalogue handle for the learning UI (teach the same catalogue the
+    // vision loop classifies against). Taken before the recogniser moves into
+    // the vision task.
+    let catalog_handle = recognizer.as_ref().map(|r| r.catalog_handle());
 
     // Learning: only in the workstation profile, and only with recognition on.
     // Unrecognised objects flow here for the operator to label (latest-wins).
@@ -269,29 +309,6 @@ async fn main() -> anyhow::Result<()> {
         label_tx,
     );
 
-    // Learning consumer (C1): log each unrecognised object and its nearest
-    // known classes. The workstation labelling panel replaces this in C2.
-    if let Some(mut label_rx) = label_rx {
-        tokio::spawn(async move {
-            loop {
-                let request = label_rx.borrow_and_update().clone();
-                if let Some(req) = request {
-                    let nearest: Vec<String> = req
-                        .nearest
-                        .iter()
-                        .map(|(c, s)| format!("{c} {:.0}%", s * 100.0))
-                        .collect();
-                    info!(
-                        "Learning: unrecognised object — nearest known: [{}]",
-                        nearest.join(", ")
-                    );
-                }
-                if label_rx.changed().await.is_err() {
-                    break;
-                }
-            }
-        });
-    }
 
     // --- UI ---
     let ui = AppWindow::new()?;
@@ -599,6 +616,91 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // --- Learning UI (workstation): surface unrecognised objects and teach
+    // them into the shared catalogue ---
+    {
+        // Embedding of the object currently shown in the labelling panel.
+        let pending: Arc<std::sync::Mutex<Option<Vec<f32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        // Consumer: push each unrecognised object into the panel (latest-wins).
+        if let Some(mut label_rx) = label_rx {
+            let ui_handle = ui_weak.clone();
+            let pending = pending.clone();
+            tokio::spawn(async move {
+                loop {
+                    let request = label_rx.borrow_and_update().clone();
+                    if let Some(req) = request {
+                        *pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(req.embedding.clone());
+                        let ui_handle2 = ui_handle.clone();
+                        let thumbnail = req.thumbnail;
+                        let nearest = req.nearest;
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_handle2.upgrade() {
+                                ui.set_learn_crop(slint::Image::from_rgb8(thumbnail));
+                                let candidates: Vec<Candidate> = nearest
+                                    .iter()
+                                    .map(|(name, sim)| Candidate {
+                                        name: name.clone().into(),
+                                        score: format!("{:.0}%", sim * 100.0).into(),
+                                    })
+                                    .collect();
+                                ui.set_learn_candidates(slint::ModelRc::new(
+                                    slint::VecModel::from(candidates),
+                                ));
+                                ui.set_learning_active(true);
+                            }
+                        });
+                    }
+                    if label_rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        let path = config.recognition.catalog_path.clone();
+        {
+            let catalog = catalog_handle.clone();
+            let pending = pending.clone();
+            let path = path.clone();
+            let ui_handle = ui_weak.clone();
+            ui.on_learn_assign(move |class| {
+                teach_example(&catalog, &path, &pending, class.as_str());
+                if let Some(ui) = ui_handle.upgrade() {
+                    ui.set_learning_active(false);
+                }
+            });
+        }
+        {
+            let catalog = catalog_handle.clone();
+            let pending = pending.clone();
+            let path = path.clone();
+            let ui_handle = ui_weak.clone();
+            ui.on_learn_create(move |name| {
+                teach_example(&catalog, &path, &pending, name.as_str());
+                if let Some(ui) = ui_handle.upgrade() {
+                    ui.set_learning_active(false);
+                }
+            });
+        }
+        {
+            let pending = pending.clone();
+            let ui_handle = ui_weak.clone();
+            ui.on_learn_skip(move || {
+                *pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                if let Some(ui) = ui_handle.upgrade() {
+                    ui.set_learning_active(false);
+                }
+            });
+        }
+    }
+
     info!("UI: Running event loop...");
     ui.run()?;
 
@@ -635,4 +737,40 @@ async fn main() -> anyhow::Result<()> {
     }
     info!("System shut down.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vision::catalog::Catalog;
+    use vision::embedder::SharedCatalog;
+
+    #[test]
+    fn teach_example_adds_and_persists() {
+        let catalog: SharedCatalog = Arc::new(std::sync::Mutex::new(Catalog::new()));
+        let pending = Arc::new(std::sync::Mutex::new(Some(vec![1.0f32, 0.0, 0.0])));
+        let path = std::env::temp_dir().join(format!("dx2_learn_test_{}.toml", std::process::id()));
+        let path_str = path.to_str().unwrap();
+
+        teach_example(&Some(catalog.clone()), path_str, &pending, "red");
+
+        // Pending consumed, catalogue gained the class, file written.
+        assert!(pending.lock().unwrap().is_none());
+        assert_eq!(catalog.lock().unwrap().len(), 1);
+        let reloaded = Catalog::load(path_str).unwrap();
+        assert_eq!(reloaded.classes(), vec!["red".to_string()]);
+        let _ = std::fs::remove_file(path_str);
+    }
+
+    #[test]
+    fn teach_example_ignores_blank_class_and_keeps_pending() {
+        let catalog: SharedCatalog = Arc::new(std::sync::Mutex::new(Catalog::new()));
+        let pending = Arc::new(std::sync::Mutex::new(Some(vec![1.0f32])));
+        teach_example(&Some(catalog.clone()), "unused.toml", &pending, "   ");
+        assert_eq!(catalog.lock().unwrap().len(), 0, "blank name must not teach");
+        assert!(
+            pending.lock().unwrap().is_some(),
+            "a blank name must not consume the pending object"
+        );
+    }
 }
