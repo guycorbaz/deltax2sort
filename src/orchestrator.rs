@@ -146,16 +146,19 @@ impl TrajectoryPlanner {
         }
     }
 
-    /// Predict where the object crosses the pick line and whether the robot
-    /// can be there in time. Returns None when the object is moving away
-    /// from (or already past) the pick line, or is unreachable in time.
+    /// Predict where the object crosses the pick line and whether the robot can
+    /// be there in time. Returns the intercept as `(x, y)` in robot mm — XY
+    /// only: the pick height (z) always comes from configuration, never from
+    /// vision (which reports the belt plane as z = 0). Returns None when the
+    /// object is moving away from (or already past) the pick line, or is
+    /// unreachable in time.
     // Unit-tested but not called on the active path yet (see struct note).
     #[allow(dead_code)]
     pub fn calculate_intercept(
         &self,
         robot_pos: Position,
         object: &DetectedObject,
-    ) -> Option<Position> {
+    ) -> Option<(f32, f32)> {
         let pos = object.world_pos?;
         if self.conveyor_speed_mm_s == 0.0 {
             return None;
@@ -166,15 +169,11 @@ impl TrajectoryPlanner {
             return None;
         }
         // The belt only moves along Y, so X is unchanged at intercept.
-        let target = Position {
-            x: pos.x,
-            y: self.pick_line_y,
-            z: pos.z,
-        };
-        let dx = target.x - robot_pos.x;
-        let dy = target.y - robot_pos.y;
+        let (target_x, target_y) = (pos.x, self.pick_line_y);
+        let dx = target_x - robot_pos.x;
+        let dy = target_y - robot_pos.y;
         let robot_time = (dx * dx + dy * dy).sqrt() / self.robot_speed_mm_s;
-        (robot_time < time_to_line).then_some(target)
+        (robot_time < time_to_line).then_some((target_x, target_y))
     }
 }
 
@@ -678,11 +677,13 @@ mod tests {
         // Belt moves toward +Y at 100 mm/s; object 100 mm upstream of the
         // pick line arrives in 1 s; robot needs 50/250 = 0.2 s.
         let planner = TrajectoryPlanner::new(100.0, 250.0);
-        let target = planner
+        let (x, y) = planner
             .calculate_intercept(ORIGIN, &object_at(50.0, -100.0))
             .expect("object should be interceptable");
-        assert_eq!(target.x, 50.0);
-        assert_eq!(target.y, 0.0);
+        // XY only — no z is returned (the pick height comes from config, not
+        // from vision's z = 0).
+        assert_eq!(x, 50.0);
+        assert_eq!(y, 0.0);
     }
 
     #[test]
