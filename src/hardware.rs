@@ -913,6 +913,294 @@ mod tests {
         assert_eq!(*log.lock().unwrap(), vec![Connect, Start(800), Stop]);
     }
 
+    // --- Scripted fake serial port: protocol-level tests for
+    // `send_and_wait_feedback`. No hardware, zero new dependencies — a fake
+    // that implements `serialport::SerialPort` lets us drive every branch of
+    // the FEEDBACK wait: echo, ack, error, EOF, timeout, and the partial-line
+    // straddle the read-timeout handling is written to survive.
+
+    /// One scripted outcome of a `read()` call on the fake device.
+    enum ReadStep {
+        /// Deliver these bytes as the result of a single `read()`.
+        Bytes(&'static [u8]),
+        /// Simulate a per-read serial timeout (no data available yet).
+        Timeout,
+        /// Simulate a non-timeout I/O error (e.g. device fault).
+        Error,
+    }
+
+    /// What `read()` returns once the scripted steps are exhausted.
+    #[derive(Clone, Copy)]
+    enum WhenDone {
+        /// Port closed / device unplugged (`read` returns `Ok(0)`).
+        Eof,
+        /// Keep timing out forever (drives the overall-deadline path).
+        Timeout,
+    }
+
+    struct ScriptedPort {
+        reads: std::collections::VecDeque<ReadStep>,
+        when_done: WhenDone,
+        /// Everything written to the port, for asserting the exact bytes the
+        /// driver framed onto the wire.
+        writes: Arc<StdMutex<Vec<u8>>>,
+        /// When true, `write()` fails — exercises the pre-read write error path.
+        fail_write: bool,
+    }
+
+    impl std::io::Read for ScriptedPort {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.reads.pop_front() {
+                Some(ReadStep::Bytes(bytes)) => {
+                    let n = bytes.len().min(buf.len());
+                    buf[..n].copy_from_slice(&bytes[..n]);
+                    // A single scripted chunk never exceeds the 8 KiB BufReader
+                    // buffer in these tests; if it did we'd drop the tail, so
+                    // guard against silently mis-scripting a test.
+                    assert_eq!(n, bytes.len(), "scripted chunk larger than read buffer");
+                    Ok(n)
+                }
+                Some(ReadStep::Timeout) => {
+                    Err(std::io::Error::new(ErrorKind::TimedOut, "scripted timeout"))
+                }
+                Some(ReadStep::Error) => Err(std::io::Error::other("scripted device fault")),
+                None => match self.when_done {
+                    WhenDone::Eof => Ok(0),
+                    WhenDone::Timeout => {
+                        Err(std::io::Error::new(ErrorKind::TimedOut, "scripted timeout"))
+                    }
+                },
+            }
+        }
+    }
+
+    impl Write for ScriptedPort {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.fail_write {
+                return Err(std::io::Error::other("scripted write failure"));
+            }
+            self.writes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // The full `serialport::SerialPort` surface. Only Read/Write are exercised
+    // by `send_and_wait_feedback`; the rest exist solely to satisfy the trait
+    // object and return harmless defaults.
+    impl serialport::SerialPort for ScriptedPort {
+        fn name(&self) -> Option<String> {
+            Some("scripted".to_string())
+        }
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            Ok(115200)
+        }
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            Ok(serialport::DataBits::Eight)
+        }
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            Ok(serialport::FlowControl::None)
+        }
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            Ok(serialport::Parity::None)
+        }
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            Ok(serialport::StopBits::One)
+        }
+        fn timeout(&self) -> Duration {
+            Duration::from_millis(2000)
+        }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            // Not needed by the tests; a clone that shares nothing is enough.
+            Err(serialport::Error::new(
+                serialport::ErrorKind::Unknown,
+                "scripted port cannot be cloned",
+            ))
+        }
+        fn set_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn clear_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Build a `SharedPort` around a scripted device and hand back the shared
+    /// write log so a test can assert the exact framed bytes.
+    fn scripted(reads: Vec<ReadStep>, when_done: WhenDone) -> (SharedPort, Arc<StdMutex<Vec<u8>>>) {
+        let writes = Arc::new(StdMutex::new(Vec::new()));
+        let port = ScriptedPort {
+            reads: reads.into_iter().collect(),
+            when_done,
+            writes: writes.clone(),
+            fail_write: false,
+        };
+        let shared: SharedPort = Arc::new(StdMutex::new(Box::new(port)));
+        (shared, writes)
+    }
+
+    #[test]
+    fn feedback_echo_completes_command_and_frames_the_id() {
+        let (port, writes) = scripted(vec![ReadStep::Bytes(b"sync_1\n")], WhenDone::Eof);
+        let r = send_and_wait_feedback(&port, "G01 X1 Y2 Z-3 F15000", "sync_1", Duration::from_secs(1));
+        assert!(r.is_ok(), "expected completion, got {:?}", r.err());
+        // The FEEDBACK id is appended to the command, newline-terminated.
+        assert_eq!(
+            writes.lock().unwrap().as_slice(),
+            b"G01 X1 Y2 Z-3 F15000 FEEDBACK:sync_1\n"
+        );
+    }
+
+    #[test]
+    fn ok_ack_is_ignored_and_feedback_still_completes() {
+        // 'ok' acknowledges receipt only; completion is the FEEDBACK echo.
+        let (port, _) = scripted(
+            vec![ReadStep::Bytes(b"ok\n"), ReadStep::Bytes(b"sync_1\n")],
+            WhenDone::Eof,
+        );
+        assert!(send_and_wait_feedback(&port, "M03", "sync_1", Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
+    fn blank_and_unexpected_lines_are_skipped_until_feedback() {
+        let (port, _) = scripted(
+            vec![
+                ReadStep::Bytes(b"\n"),
+                ReadStep::Bytes(b"Delta X2 booted\n"),
+                ReadStep::Bytes(b"OK\n"),
+                ReadStep::Bytes(b"sync_2\n"),
+            ],
+            WhenDone::Eof,
+        );
+        assert!(send_and_wait_feedback(&port, "G28", "sync_2", Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
+    fn error_line_fails_the_command() {
+        let (port, _) = scripted(vec![ReadStep::Bytes(b"error: bad axis\n")], WhenDone::Eof);
+        let err = send_and_wait_feedback(&port, "G01 X1", "sync_1", Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("reported error"), "got: {err}");
+    }
+
+    #[test]
+    fn error_matching_is_case_insensitive() {
+        let (port, _) = scripted(vec![ReadStep::Bytes(b"ERROR limit hit\n")], WhenDone::Eof);
+        assert!(send_and_wait_feedback(&port, "G01 X1", "sync_1", Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn eof_before_feedback_fails_fast() {
+        // Device unplugged mid-wait: read returns Ok(0). Must not spin forever.
+        let (port, _) = scripted(vec![], WhenDone::Eof);
+        let err = send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_secs(30))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("closed"), "got: {err}");
+    }
+
+    #[test]
+    fn timeout_without_feedback_fails_at_the_deadline() {
+        // The robot never echoes: read keeps timing out until the overall
+        // deadline elapses (kept short so the test is fast).
+        let (port, _) = scripted(vec![], WhenDone::Timeout);
+        let err = send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_millis(30))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("timed out"), "got: {err}");
+    }
+
+    #[test]
+    fn feedback_split_across_a_read_timeout_still_completes() {
+        // The invariant the read-timeout arm defends: an echo that straddles a
+        // per-read timeout ("sync" ... TIMEOUT ... "_1\n") must complete, not
+        // be corrupted into a false failure.
+        let (port, _) = scripted(
+            vec![
+                ReadStep::Bytes(b"sync"),
+                ReadStep::Timeout,
+                ReadStep::Bytes(b"_1\n"),
+            ],
+            WhenDone::Eof,
+        );
+        assert!(
+            send_and_wait_feedback(&port, "G01 X1", "sync_1", Duration::from_secs(1)).is_ok(),
+            "echo split across a read timeout must still be recognised"
+        );
+    }
+
+    #[test]
+    fn non_timeout_read_error_fails_the_command() {
+        let (port, _) = scripted(vec![ReadStep::Error], WhenDone::Eof);
+        let err = send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("reading feedback"), "got: {err}");
+    }
+
+    #[test]
+    fn write_failure_propagates_before_any_wait() {
+        let writes = Arc::new(StdMutex::new(Vec::new()));
+        let port: SharedPort = Arc::new(StdMutex::new(Box::new(ScriptedPort {
+            reads: std::collections::VecDeque::new(),
+            when_done: WhenDone::Eof,
+            writes,
+            fail_write: true,
+        })));
+        assert!(send_and_wait_feedback(&port, "G28", "sync_1", Duration::from_secs(1)).is_err());
+    }
+
     #[tokio::test]
     async fn deltax2_validates_bounds_before_port_access() {
         // No hardware: bounds are checked before the connection state.

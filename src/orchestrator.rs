@@ -775,4 +775,301 @@ mod tests {
         q.clear();
         assert!(q.pop().is_none());
     }
+
+    // --- Run-loop integration tests -------------------------------------
+    //
+    // These drive the real async `run()` loop with in-code fakes (project
+    // rule: no new deps, no real hardware). They cover what the unit tests
+    // above cannot: message drain ordering, pause/resume, E-stop preemption,
+    // command-failure recovery, home recovery, manual gripper and shutdown —
+    // all through the loop itself, not by calling handlers directly.
+    //
+    // Determinism: `#[tokio::test]` uses a current-thread runtime, so the
+    // spawned orchestrator makes no progress until the test awaits. Sending
+    // every message and dropping the sender *before* awaiting therefore means
+    // the loop's first drain sees them all in order (mpsc is FIFO). Dropping
+    // the sender is also how the loop terminates (recv → None).
+
+    use crate::hardware::MockRobotCommand;
+
+    /// A robot boxed behind the shared async mutex, as the orchestrator holds it.
+    type BoxedRobot = Arc<Mutex<Box<dyn RobotController>>>;
+    /// Shared handle to a mock robot's ordered command log.
+    type CmdLog = std::sync::Arc<std::sync::Mutex<Vec<MockRobotCommand>>>;
+
+    /// A boxed `MockRobot` plus a handle to its command log.
+    fn mock_robot_with_log() -> (BoxedRobot, CmdLog) {
+        let mock = crate::hardware::MockRobot::new();
+        let log = mock.command_log();
+        (Arc::new(Mutex::new(Box::new(mock))), log)
+    }
+
+    /// Spawn `run()`, feed it `msgs`, drop the sender, and await termination
+    /// (bounded, so a stuck loop fails the test instead of hanging forever).
+    /// Returns the state/error watch receivers for post-run assertions.
+    async fn run_with(
+        robot: BoxedRobot,
+        msgs: Vec<OrchestratorMsg>,
+    ) -> (
+        watch::Receiver<OrchestratorState>,
+        watch::Receiver<Option<String>>,
+    ) {
+        let (tx, state_rx, error_rx, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let handle = tokio::spawn(orch.run());
+        for m in msgs {
+            tx.send(m).expect("orchestrator receiver alive");
+        }
+        drop(tx); // all senders gone → loop returns after draining
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run loop did not terminate")
+            .expect("run loop task panicked");
+        (state_rx, error_rx)
+    }
+
+    /// Poll the mock log until it holds at least `n` commands (used when a test
+    /// must let real work happen before sending the next message).
+    async fn wait_for_commands(log: &CmdLog, n: usize) {
+        for _ in 0..500 {
+            if log.lock().unwrap().len() >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("robot did not reach {n} commands in time");
+    }
+
+    // Config-default pick geometry for object_at(50, 0): z_travel = -50,
+    // z_pick = -180, drop = (150, 0, -100).
+    const TRAVEL_50: Position = Position { x: 50.0, y: 0.0, z: -50.0 };
+    const PICK_50: Position = Position { x: 50.0, y: 0.0, z: -180.0 };
+    const DROP: Position = Position { x: 150.0, y: 0.0, z: -100.0 };
+
+    /// A robot whose moves always fail at the hardware — the case the queue
+    /// clears and pauses on. Gripper/home/connect succeed so the best-effort
+    /// release after a failed pick is observable. estop_handle is unused by
+    /// the loop, so `None` is fine.
+    use anyhow::anyhow;
+    use async_trait::async_trait;
+
+    struct FailingRobot {
+        log: CmdLog,
+    }
+
+    impl FailingRobot {
+        fn new() -> (Self, CmdLog) {
+            let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            (Self { log: log.clone() }, log)
+        }
+        fn record(&self, cmd: MockRobotCommand) {
+            self.log.lock().unwrap().push(cmd);
+        }
+    }
+
+    #[async_trait]
+    impl RobotController for FailingRobot {
+        async fn connect(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn home(&mut self) -> Result<()> {
+            self.record(MockRobotCommand::Home);
+            Ok(())
+        }
+        async fn move_to(&mut self, _pos: Position) -> Result<()> {
+            // Passes the orchestrator's own limit check but fails at the wire.
+            Err(anyhow!("simulated hardware move failure"))
+        }
+        async fn set_gripper(&mut self, on: bool) -> Result<()> {
+            self.record(MockRobotCommand::Gripper(on));
+            Ok(())
+        }
+        async fn stop(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn estop_handle(&self) -> Option<Arc<dyn crate::hardware::EmergencyStop>> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn run_loop_executes_a_full_pick_end_to_end() {
+        use MockRobotCommand::*;
+        let (robot, log) = mock_robot_with_log();
+        let (state_rx, _err) = run_with(
+            robot,
+            vec![
+                OrchestratorMsg::Resume,
+                OrchestratorMsg::Pick(object_at(50.0, 0.0)),
+            ],
+        )
+        .await;
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                MoveTo(TRAVEL_50), // approach above
+                MoveTo(PICK_50),   // descend (Wait is not a robot command)
+                Gripper(true),     // grab
+                MoveTo(TRAVEL_50), // lift
+                MoveTo(DROP),      // carry to drop
+                Gripper(false),    // release
+            ],
+        );
+        assert_eq!(*state_rx.borrow(), OrchestratorState::Running);
+    }
+
+    #[tokio::test]
+    async fn run_loop_drops_pick_while_paused() {
+        // Default state is Paused: a boot-time pick must not move the robot.
+        let (robot, log) = mock_robot_with_log();
+        let (state_rx, _err) =
+            run_with(robot, vec![OrchestratorMsg::Pick(object_at(50.0, 0.0))]).await;
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "paused pick must command the robot nothing"
+        );
+        assert_eq!(*state_rx.borrow(), OrchestratorState::Paused);
+    }
+
+    #[tokio::test]
+    async fn run_loop_pause_drops_then_resume_executes() {
+        let (robot, log) = mock_robot_with_log();
+        run_with(
+            robot,
+            vec![
+                OrchestratorMsg::Resume,
+                OrchestratorMsg::Pause,
+                OrchestratorMsg::Pick(object_at(10.0, 0.0)), // dropped while paused
+                OrchestratorMsg::Resume,
+                OrchestratorMsg::Pick(object_at(50.0, 0.0)), // this one runs
+            ],
+        )
+        .await;
+        let cmds = log.lock().unwrap();
+        assert_eq!(
+            cmds.len(),
+            6,
+            "only the pick after the second Resume should run, got {cmds:?}"
+        );
+        assert_eq!(cmds[0], MockRobotCommand::MoveTo(TRAVEL_50));
+    }
+
+    #[tokio::test]
+    async fn run_loop_estop_preempts_queued_commands() {
+        // Pick then E-stop arrive in the same drain: the scheduled sequence is
+        // cleared before a single command is executed.
+        let (robot, log) = mock_robot_with_log();
+        let (state_rx, _err) = run_with(
+            robot,
+            vec![
+                OrchestratorMsg::Resume,
+                OrchestratorMsg::Pick(object_at(50.0, 0.0)),
+                OrchestratorMsg::EStop,
+            ],
+        )
+        .await;
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "E-stop must drop the queued pick before it reaches the robot"
+        );
+        assert_eq!(*state_rx.borrow(), OrchestratorState::EStopped);
+    }
+
+    #[tokio::test]
+    async fn run_loop_command_failure_clears_queue_and_pauses() {
+        let (failing, log) = FailingRobot::new();
+        let robot: BoxedRobot = Arc::new(Mutex::new(Box::new(failing)));
+        let (state_rx, error_rx) = run_with(
+            robot,
+            vec![
+                OrchestratorMsg::Resume,
+                OrchestratorMsg::Pick(object_at(50.0, 0.0)),
+            ],
+        )
+        .await;
+        // The first MoveTo fails: the queue is cleared (no later pick command
+        // runs) and only the best-effort gripper release reaches the robot.
+        assert_eq!(*log.lock().unwrap(), vec![MockRobotCommand::Gripper(false)]);
+        assert_eq!(*state_rx.borrow(), OrchestratorState::Paused);
+        assert!(
+            error_rx
+                .borrow()
+                .as_deref()
+                .is_some_and(|m| m.contains("failed")),
+            "the operator banner must report the failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_loop_home_clears_estop_state() {
+        // E-stop, then operator Home: Home runs even though we are paused and
+        // E-stopped, and clears the E-stop interlock.
+        let (robot, log) = mock_robot_with_log();
+        let (state_rx, _err) = run_with(
+            robot,
+            vec![
+                OrchestratorMsg::Resume,
+                OrchestratorMsg::EStop,
+                OrchestratorMsg::Home,
+            ],
+        )
+        .await;
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![MockRobotCommand::Home],
+            "home must run as the E-stop recovery action"
+        );
+        assert_eq!(
+            *state_rx.borrow(),
+            OrchestratorState::Paused,
+            "after homing the E-stop interlock is cleared (back to Paused)"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_loop_manual_gripper_runs_while_paused() {
+        // A manual toggle must reach the robot even from the default paused
+        // state (release a part held after a failed pick / E-stop).
+        let (robot, log) = mock_robot_with_log();
+        run_with(robot, vec![OrchestratorMsg::SetGripper(true)]).await;
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![MockRobotCommand::Gripper(true)],
+            "manual gripper toggle must run while paused"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_loop_shutdown_parks_after_the_pick_completes() {
+        use MockRobotCommand::*;
+        // Unlike the messages above, Shutdown must arrive *after* the pick has
+        // run, otherwise it would (correctly) preempt it and there would be no
+        // recorded position to park from. So we let the pick finish first.
+        let (robot, log) = mock_robot_with_log();
+        let (tx, _state_rx, _err, orch) = Orchestrator::new(&AppConfig::default(), robot);
+        let handle = tokio::spawn(orch.run());
+        tx.send(OrchestratorMsg::Resume).unwrap();
+        tx.send(OrchestratorMsg::Pick(object_at(50.0, 0.0))).unwrap();
+        wait_for_commands(&log, 6).await; // whole pick executed
+        tx.send(OrchestratorMsg::Shutdown).unwrap();
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("run loop did not terminate")
+            .expect("run loop task panicked");
+
+        let cmds = log.lock().unwrap();
+        // Park raises straight up to z_travel above the last position (DROP),
+        // after releasing the gripper.
+        let park_raise = Position { x: 150.0, y: 0.0, z: -50.0 };
+        assert_eq!(
+            cmds.last().cloned(),
+            Some(MoveTo(park_raise)),
+            "shutdown must raise to z_travel above the last position"
+        );
+        assert_eq!(
+            cmds[cmds.len() - 2],
+            Gripper(false),
+            "shutdown releases the gripper before raising"
+        );
+    }
 }
