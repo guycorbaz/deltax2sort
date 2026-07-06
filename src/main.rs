@@ -149,6 +149,31 @@ fn teach_example(
     }
 }
 
+/// Persist the learned catalogue and return an operator-facing message naming
+/// the two files to copy to the Pi (the catalogue and the ONNX model).
+fn export_catalog(
+    catalog: &Option<vision::embedder::SharedCatalog>,
+    catalog_path: &str,
+    model_path: &str,
+) -> String {
+    let Some(catalog) = catalog else {
+        return "Recognition is disabled — nothing to export.".to_string();
+    };
+    let cat = catalog
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match cat.save(catalog_path) {
+        Ok(()) => format!(
+            "Exported {} class(es) to {catalog_path}. Copy it and {model_path} to the Pi.",
+            cat.classes().len()
+        ),
+        Err(e) => {
+            error!("Learning: catalogue export failed: {e:#}");
+            format!("Export failed: {e}")
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -699,6 +724,21 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
         }
+        {
+            // Explicit export: teaching already auto-saves, but this confirms
+            // the path and reminds which files to carry to the Pi.
+            let catalog = catalog_handle.clone();
+            let catalog_path = path.clone();
+            let model_path = config.recognition.model_path.clone();
+            let ui_handle = ui_weak.clone();
+            ui.on_export_catalog(move || {
+                let message = export_catalog(&catalog, &catalog_path, &model_path);
+                info!("Learning: {message}");
+                if let Some(ui) = ui_handle.upgrade() {
+                    ui.set_export_status(message.into());
+                }
+            });
+        }
     }
 
     info!("UI: Running event loop...");
@@ -772,5 +812,26 @@ mod tests {
             pending.lock().unwrap().is_some(),
             "a blank name must not consume the pending object"
         );
+    }
+
+    #[test]
+    fn export_catalog_saves_and_names_the_files() {
+        let catalog: SharedCatalog = Arc::new(std::sync::Mutex::new(Catalog::new()));
+        catalog.lock().unwrap().add("red", &[1.0, 0.0]);
+        let path = std::env::temp_dir().join(format!("dx2_export_test_{}.toml", std::process::id()));
+        let path_str = path.to_str().unwrap();
+
+        let msg = export_catalog(&Some(catalog), path_str, "models/embedder.onnx");
+
+        assert!(msg.contains("1 class"), "message: {msg}");
+        assert!(msg.contains(path_str) && msg.contains("models/embedder.onnx"));
+        assert!(Catalog::load(path_str).is_ok(), "catalogue must be written");
+        let _ = std::fs::remove_file(path_str);
+    }
+
+    #[test]
+    fn export_catalog_reports_when_recognition_is_off() {
+        let msg = export_catalog(&None, "x.toml", "m.onnx");
+        assert!(msg.contains("disabled"), "message: {msg}");
     }
 }

@@ -66,6 +66,9 @@ export component AppWindow inherits Window {
     callback learn-assign(string);
     callback learn-create(string);
     callback learn-skip();
+    // Export the learned catalogue (workstation) and confirm where it is.
+    callback export-catalog();
+    in property <string> export-status: "";
 
     callback start-clicked();
     callback stop-clicked();
@@ -251,6 +254,23 @@ export component AppWindow inherits Window {
                         clicked => {
                             root.gripper-toggle(!gripper-on);
                         }
+                    }
+
+                    // Workstation-only: save the learned catalogue for copying
+                    // to the Pi.
+                    if (workstation): Button {
+                        text: "Export Catalogue";
+                        min-height: 48px;
+                        clicked => {
+                            root.export-catalog();
+                        }
+                    }
+                    if (workstation && export-status != ""): Text {
+                        text: export-status;
+                        color: #4fc3f7;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
                     }
 
                     if (error-text != ""): Text {

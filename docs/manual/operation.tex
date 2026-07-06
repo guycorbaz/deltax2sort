@@ -100,7 +100,15 @@ In the \emph{workstation} profile (\S\ref{sec:calibration} and
 nearest known classes. The operator either assigns it to one of those classes
 or types a new class name and creates it; the example is added to the
 catalogue and saved. Unlabelled (\emph{Skip}) objects are simply left on the
-belt. This is how the catalogue is taught before it is copied to the Pi.
+belt.
+
+Teaching saves the catalogue automatically; the workstation also has an
+\emph{Export Catalogue} button that re-saves it and confirms the path. To
+deploy: copy the learned catalogue (\cfg{[recognition].catalog\_path}) and the
+model (\cfg{[recognition].model\_path}, i.e. \cfg{models/embedder.onnx}) to the
+Pi, set \cfg{[recognition].enabled = true} there, and run the Pi in its default
+\cfg{"pi"} profile. The Pi never needs the training tools --- only \cfg{tract}
+(built in) plus those two files.
 
 The status line reflects the orchestrator's \emph{confirmed} state —
 \emph{Ready (paused)}, \emph{Sorting}, or \emph{E-STOP -- HOME REQUIRED}
