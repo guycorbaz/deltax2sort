@@ -289,6 +289,17 @@ impl Tracker {
         }
     }
 
+    /// Re-arm a track whose Pick the orchestrator declined for a retryable
+    /// reason (it went stale in a busy queue) while the object is still on the
+    /// belt: clear `reported` so `take_ready` emits it again. No-op if the
+    /// track is gone or was never reported.
+    pub fn rearm(&mut self, id: u64) {
+        if let Some(t) = self.tracks.iter_mut().find(|t| t.id == id && t.reported) {
+            t.reported = false;
+            debug!("Tracker: re-arming track {id} after a declined pick");
+        }
+    }
+
     /// Return every track detected in at least `min_seen` frames that has
     /// not been reported yet, marking it reported. Each physical object is
     /// therefore returned exactly once over its lifetime.
@@ -459,6 +470,37 @@ mod tests {
         );
         assert_eq!(tracker.tracks.len(), 1, "it is still tracked (id 2)");
         assert_eq!(tracker.tracks[0].id, 2);
+    }
+
+    #[test]
+    fn a_declined_pick_re_arms_the_track_for_re_emission() {
+        let mut tracker = Tracker::new();
+        for _ in 0..3 {
+            tracker.update(vec![detection_at(100, 100)], 0.0);
+        }
+        assert_eq!(tracker.take_ready(3).len(), 1, "first Pick");
+        assert!(tracker.take_ready(3).is_empty(), "not re-emitted on its own");
+        // The orchestrator declined the pick (stale in a busy queue): re-arm.
+        tracker.rearm(1);
+        let ready = tracker.take_ready(3);
+        assert_eq!(ready.len(), 1, "re-armed track is emitted again");
+        assert_eq!(ready[0].id, 1);
+    }
+
+    #[test]
+    fn rearm_of_unknown_or_unreported_track_is_a_noop() {
+        let mut tracker = Tracker::new();
+        tracker.rearm(999); // no such track — must not panic
+        for _ in 0..2 {
+            tracker.update(vec![detection_at(100, 100)], 0.0);
+        }
+        tracker.rearm(1); // track exists but is not yet reported → no-op
+        tracker.update(vec![detection_at(100, 100)], 0.0);
+        assert_eq!(
+            tracker.take_ready(3).len(),
+            1,
+            "still emits its first pick normally"
+        );
     }
 
     #[test]

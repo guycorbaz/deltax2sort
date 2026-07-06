@@ -210,6 +210,10 @@ pub struct Orchestrator {
     /// class present here; anything else (unrecognised, or recognised but
     /// unassigned) is left on the belt to reach the end catch bin.
     class_drops: std::collections::HashMap<String, Position>,
+    /// Object ids whose pick was declined for a RETRYABLE reason (it went stale
+    /// in a busy queue while the object is still on the belt). The vision loop
+    /// re-arms those tracks so they are emitted again. `None` = no re-arm sink.
+    declined_tx: Option<mpsc::UnboundedSender<u64>>,
     robot: Arc<Mutex<Box<dyn RobotController>>>,
 }
 
@@ -253,6 +257,7 @@ impl Orchestrator {
                 .into_iter()
                 .map(|(class, (x, y, z))| (class, Position { x, y, z }))
                 .collect(),
+            declined_tx: None,
             robot,
         };
         (tx, state_rx, error_rx, orchestrator)
@@ -262,6 +267,12 @@ impl Orchestrator {
     /// chain still goes to the log; this is the one line the operator sees.
     fn report_error(&self, msg: String) {
         let _ = self.error_tx.send(Some(msg));
+    }
+
+    /// Where to report retryable pick declines so the vision loop can re-arm
+    /// the track. Set once at startup, before the loop is spawned.
+    pub fn set_declined_sink(&mut self, tx: mpsc::UnboundedSender<u64>) {
+        self.declined_tx = Some(tx);
     }
 
     /// Actuate the gripper without letting a failure abort the caller. Used
@@ -494,6 +505,12 @@ impl Orchestrator {
                 age.as_secs_f32(),
                 PICK_TTL.as_secs()
             );
+            // Retryable: the object is likely still on the belt (the pick only
+            // went stale because the queue was busy). Ask the vision loop to
+            // re-arm the track so it is emitted again with a fresh detection.
+            if let Some(tx) = &self.declined_tx {
+                let _ = tx.send(object.id);
+            }
             return;
         }
         let Some(pos) = object.world_pos else {
@@ -750,6 +767,41 @@ mod tests {
         let now = object.seen_at + Duration::from_secs(4);
         orch.schedule_pick(object, now);
         assert!(orch.queue.is_empty(), "stale pick must not be queued");
+    }
+
+    #[test]
+    fn a_stale_pick_signals_a_decline_and_a_fresh_one_does_not() {
+        let mut orch = test_orchestrator();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        orch.set_declined_sink(tx);
+
+        // Fresh pick: scheduled, no decline signalled.
+        let fresh = object_at(50.0, 0.0);
+        let seen = fresh.seen_at;
+        orch.schedule_pick(fresh, seen + Duration::from_secs(1));
+        assert!(rx.try_recv().is_err(), "a fresh pick must not signal a decline");
+        assert_eq!(orch.queue.len(), 7);
+
+        // Stale pick (object id 1): dropped AND signalled so the track re-arms.
+        let stale = object_at(50.0, 0.0);
+        let stale_seen = stale.seen_at;
+        orch.schedule_pick(stale, stale_seen + Duration::from_secs(4));
+        assert_eq!(rx.try_recv().ok(), Some(1), "a stale pick signals a decline");
+    }
+
+    #[test]
+    fn unassigned_or_unrecognised_pick_does_not_signal_a_decline() {
+        let mut orch = test_orchestrator();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        orch.set_declined_sink(tx);
+        // Unrecognised object: dropped (catch bin) but NOT retryable.
+        let obj = object_of_class(50.0, 0.0, None);
+        let seen = obj.seen_at;
+        orch.schedule_pick(obj, seen + Duration::from_secs(1));
+        assert!(
+            rx.try_recv().is_err(),
+            "an unsortable object must not be re-armed"
+        );
     }
 
     #[test]

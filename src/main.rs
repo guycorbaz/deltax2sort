@@ -274,7 +274,11 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Orchestrator (starts PAUSED: no pick can move the robot before
     // the operator presses Start) ---
-    let (orch_tx, orch_state, orch_errors, orch) = Orchestrator::new(&config, robot.clone());
+    let (orch_tx, orch_state, orch_errors, mut orch) = Orchestrator::new(&config, robot.clone());
+    // Retryable pick declines (stale in a busy queue) flow back to the vision
+    // loop so it can re-arm the track and emit the object again.
+    let (declined_tx, declined_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    orch.set_declined_sink(declined_tx);
     let orch_handle = tokio::spawn(orch.run());
 
     // Shutdown signal for the vision loop (the orchestrator stops via its
@@ -332,6 +336,7 @@ async fn main() -> anyhow::Result<()> {
         frame_tx,
         recognizer,
         label_tx,
+        Some(declined_rx),
     );
 
 

@@ -204,6 +204,12 @@ impl VisionPipeline {
         self.label_tx = Some(label_tx);
     }
 
+    /// Re-arm the track of an object whose Pick the orchestrator declined, so it
+    /// is emitted again (see [`Tracker::rearm`]).
+    pub fn rearm(&mut self, id: u64) {
+        self.tracker.rearm(id);
+    }
+
     /// Process one frame captured `dt` after the previous one, at
     /// `captured_at` (monotonic). `belt_running` is the actual conveyor
     /// run-state: when it is stopped the prediction shift is zero, so a
@@ -312,6 +318,9 @@ pub fn spawn_vision_loop(
     recognizer: Option<Recognizer>,
     // Learning sink for unrecognised objects (workstation profile only).
     label_tx: Option<watch::Sender<Option<LabelRequest>>>,
+    // Object ids whose Pick the orchestrator declined for a retryable reason
+    // (stale in a busy queue): re-arm their tracks so they are emitted again.
+    mut declined_rx: Option<mpsc::UnboundedReceiver<u64>>,
 ) -> tokio::task::JoinHandle<()> {
     let (width, height) = camera.resolution();
     let mm_per_px = config.vision.mm_per_px;
@@ -335,6 +344,14 @@ pub fn spawn_vision_loop(
         );
         let mut last_frame = Instant::now();
         loop {
+            // Apply any pending pick declines before the next frame, re-arming
+            // those tracks so they can be emitted again.
+            if let Some(rx) = declined_rx.as_mut() {
+                while let Ok(id) = rx.try_recv() {
+                    pipeline.rearm(id);
+                }
+            }
+
             // Stop between frames on shutdown; returning drops (releases) the
             // camera. `biased` so a pending shutdown always wins over a ready
             // frame.
