@@ -1,4 +1,5 @@
 pub mod calibration;
+pub mod catalog;
 pub mod classifier;
 pub mod detector;
 pub mod pipeline;
