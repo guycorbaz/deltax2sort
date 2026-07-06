@@ -30,6 +30,17 @@ fn rect_center(r: &Rect) -> (f32, f32) {
     )
 }
 
+fn rect_area(r: &Rect) -> f32 {
+    (r.width.max(0) as f32) * (r.height.max(0) as f32)
+}
+
+/// True when two bounding-box areas are within `max_ratio` of each other
+/// (larger / smaller ≤ max_ratio). A zero area is never compatible.
+fn areas_compatible(a: f32, b: f32, max_ratio: f32) -> bool {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    lo > 0.0 && hi <= lo * max_ratio
+}
+
 /// Multi-frame object tracker: greedy nearest-neighbour matching of
 /// detections to active tracks, with belt-motion prediction along pixel +y.
 pub struct Tracker {
@@ -38,6 +49,11 @@ pub struct Tracker {
     /// Max distance (px) between a detection center and a track's predicted
     /// center to still count as the same object.
     max_match_dist_px: f32,
+    /// Largest ratio between a track's and a detection's bounding-box areas for
+    /// them to still be considered the same object. Stops a much bigger blob
+    /// (e.g. a gripper edge) within the distance radius from stealing a small
+    /// part's identity.
+    max_area_ratio: f32,
     /// Tracks unmatched for more than this many consecutive frames are
     /// evicted.
     max_missed_frames: u32,
@@ -50,6 +66,7 @@ impl Tracker {
             tracks: Vec::new(),
             // Tuning constants; move to config if field experience demands.
             max_match_dist_px: 60.0,
+            max_area_ratio: 3.0,
             max_missed_frames: 5,
         }
     }
@@ -69,10 +86,16 @@ impl Tracker {
         // order of increasing distance, take each track/detection once.
         let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
         for (ti, &(px, py)) in predicted.iter().enumerate() {
+            let track_area = rect_area(&self.tracks[ti].last_rect);
             for (di, det) in detections.iter().enumerate() {
                 let (dx, dy) = rect_center(&det.rect);
                 let dist = ((dx - px).powi(2) + (dy - py).powi(2)).sqrt();
-                if dist <= self.max_match_dist_px {
+                // Gate on both proximity AND size similarity: a detection far
+                // off in size is a different physical thing even if its center
+                // lands within the distance radius.
+                if dist <= self.max_match_dist_px
+                    && areas_compatible(track_area, rect_area(&det.rect), self.max_area_ratio)
+                {
                     pairs.push((dist, ti, di));
                 }
             }
@@ -186,15 +209,47 @@ mod tests {
     use std::time::{Instant, SystemTime};
 
     fn detection_at(x: i32, y: i32) -> DetectedObject {
+        detection_sized(x, y, 20, 20)
+    }
+
+    fn detection_sized(x: i32, y: i32, w: i32, h: i32) -> DetectedObject {
         DetectedObject {
             id: 0,
-            rect: Rect::new(x, y, 20, 20),
+            rect: Rect::new(x, y, w, h),
             world_pos: None,
             class: None,
             confidence: 0.0,
             timestamp: SystemTime::now(),
             seen_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn a_much_larger_blob_does_not_steal_a_small_tracks_identity() {
+        let mut tracker = Tracker::new();
+        tracker.update(vec![detection_sized(100, 100, 20, 20)], 0.0); // small part, id 1
+        // A large blob (70x70 = 4900 px² vs 400) whose center is only ~21 px
+        // away — well inside the 60 px radius, so distance alone would match —
+        // must NOT steal the small track; it becomes its own track instead.
+        tracker.update(vec![detection_sized(90, 90, 70, 70)], 0.0);
+        assert_eq!(
+            tracker.tracks.len(),
+            2,
+            "the oversized blob must not steal the small track"
+        );
+        let small = tracker.tracks.iter().find(|t| t.id == 1).unwrap();
+        assert_eq!(small.last_rect.width, 20, "small track kept its own box");
+        assert_eq!(small.missed_frames, 1, "small track went unmatched this frame");
+    }
+
+    #[test]
+    fn a_moderate_size_change_still_matches_the_same_track() {
+        let mut tracker = Tracker::new();
+        tracker.update(vec![detection_sized(100, 100, 20, 20)], 0.0); // 400 px²
+        // Grows to 30x30 = 900 px² (ratio 2.25 < 3): still the same object.
+        tracker.update(vec![detection_sized(100, 100, 30, 30)], 0.0);
+        assert_eq!(tracker.tracks.len(), 1, "moderate growth keeps one track");
+        assert_eq!(tracker.tracks[0].id, 1);
     }
 
     #[test]
